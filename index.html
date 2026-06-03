@@ -22,6 +22,14 @@
     .topbar .sep  { color: #57606a; font-size: 16px; }
     .topbar .repo { font-weight: 600; }
     .topbar .path { color: #8b949e; font-family: ui-monospace, monospace; font-size: 12px; }
+    .topbar .spacer { flex: 1; }
+    .dim-toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: #8b949e; cursor: pointer; user-select: none; white-space: nowrap;
+    }
+    .dim-toggle input { cursor: pointer; accent-color: #58a6ff; }
+    .dim-toggle:hover { color: #e6edf3; }
+    body.hide-dim .mtable tr.dim { display: none; }
 
     /* ── Shell layout ─────────────────────────────────────────────────────── */
     .shell { display: flex; flex: 1; overflow: hidden; }
@@ -188,6 +196,11 @@
     <span class="repo">item-feeds</span>
     <span class="sep">/</span>
     <span class="path">app / lib / collectors / process_chunks</span>
+    <span class="spacer"></span>
+    <label class="dim-toggle">
+      <input type="checkbox" id="hide-dim-toggle" checked>
+      Hide non-feed fields
+    </label>
   </div>
 
   <div class="shell">
@@ -957,6 +970,13 @@ function renderInheritedSection(inherited) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 loadList();
+
+// ── Hide non-feed fields toggle ───────────────────────────────────────────
+const dimToggle = document.getElementById('hide-dim-toggle');
+document.body.classList.toggle('hide-dim', dimToggle.checked);
+dimToggle.addEventListener('change', () =>
+  document.body.classList.toggle('hide-dim', dimToggle.checked)
+);
 
 // ── Sidebar resize ────────────────────────────────────────────────────────
 (function () {
