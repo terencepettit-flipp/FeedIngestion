@@ -647,24 +647,46 @@ function classifyEntry(field, expr, methods) {
 
 /**
  * Extract sub-field → feed-column mappings from a builder method body.
- * Follows one level of nested method calls.
+ * Uses a pre-pass to track local variable assignments, enabling resolution
+ * of indirect references like "entry = inventory(row).first" → entry derives
+ * from inventory_details, so "price: entry&.price" → price ← inventory_details.
  */
 function extractSubMaps(body, methods) {
+  const lines = body.split('\n');
+
+  // Pre-pass: build variable → feed columns map from assignment statements
+  const varCols = {};
+  for (const line of lines) {
+    const am = line.match(/^\s+(\w+)\s*=\s+(.+)/);
+    if (!am) continue;
+    const cols = rowRefsDeep(am[2], methods);
+    if (cols.length) varCols[am[1]] = cols;
+  }
+
   const subs = [];
-  for (const line of body.split('\n')) {
+  for (const line of lines) {
     const t  = line.trimStart();
     const kv = t.match(/^(\w+):\s+(.+?)(?:,\s*)?$/);
     if (!kv) continue;
-    const subExpr = kv[2].trim().replace(/,\s*$/, '');
-    let   cols    = rowRefs(subExpr);
-    // One-level follow for nested builder calls
+    const subField = kv[1];
+    const subExpr  = kv[2].trim().replace(/,\s*$/, '');
+    let   cols     = rowRefs(subExpr);
+
+    // Follow a known method call
     if (!cols.length) {
       const nm = subExpr.match(/^([\w?!]+)\(/)
               || subExpr.match(/self\.(?:class\.)?([\w?!]+)\(/);
       if (nm && methods[nm[1]]) cols = rowRefs(methods[nm[1]]);
     }
+
+    // Resolve via a tracked local variable (e.g. entry&.price → inventory_details)
+    if (!cols.length) {
+      const vm = subExpr.match(/^(\w+)\b/);
+      if (vm && varCols[vm[1]]) cols = [...varCols[vm[1]]];
+    }
+
     if (cols.length || subExpr === 'nil')
-      subs.push({ subField: kv[1], cols, expr: subExpr });
+      subs.push({ subField, cols, expr: subExpr });
   }
   return subs.length ? subs : null;
 }
