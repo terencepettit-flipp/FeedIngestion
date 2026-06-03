@@ -57,9 +57,10 @@
     .token-reset-btn:hover { border-color: #8b949e; color: #e6edf3; }
 
     .dim-toggle {
-      display: flex; align-items: center; gap: 6px;
+      display: none; align-items: center; gap: 6px;
       font-size: 12px; color: #8b949e; cursor: pointer; user-select: none; white-space: nowrap;
     }
+    .dim-toggle.visible { display: flex; }
     .dim-toggle input { cursor: pointer; accent-color: #58a6ff; }
     .dim-toggle:hover { color: #e6edf3; }
     body.hide-dim .mtable tr.dim { display: none; }
@@ -373,6 +374,10 @@ async function openFile(row) {
 
     main.innerHTML = renderAnalysis(res, row.dataset.name);
 
+    // Show dim toggle only if this file actually has non-feed (dim) rows
+    const dimToggleEl = document.querySelector('.dim-toggle');
+    dimToggleEl.classList.toggle('visible', main.querySelectorAll('.mtable tr.dim').length > 0);
+
     // Wire collapsible snippet buttons
     main.querySelectorAll('.snip-btn').forEach(btn =>
       btn.addEventListener('click', () => {
@@ -382,6 +387,7 @@ async function openFile(row) {
     );
   } catch (e) {
     main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+    document.querySelector('.dim-toggle').classList.remove('visible');
   }
 }
 
