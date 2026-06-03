@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>process_chunks — Field Mapper</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px; color: #24292f; background: #f6f8fa;
+      height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    /* ── Top bar ──────────────────────────────────────────────────────────── */
+    .topbar {
+      background: #24292f; color: #e6edf3;
+      padding: 10px 20px; display: flex; align-items: center; gap: 6px;
+      font-size: 13px; flex-shrink: 0; border-bottom: 1px solid #444c56;
+    }
+    .topbar .sep  { color: #57606a; font-size: 16px; }
+    .topbar .repo { font-weight: 600; }
+    .topbar .path { color: #8b949e; font-family: ui-monospace, monospace; font-size: 12px; }
+
+    /* ── Shell layout ─────────────────────────────────────────────────────── */
+    .shell { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ──────────────────────────────────────────────────────────── */
+    .sidebar {
+      width: 350px; flex-shrink: 0; background: #fff;
+      display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .resize-handle {
+      width: 4px; flex-shrink: 0; cursor: col-resize;
+      background: #d0d7de; transition: background .15s;
+    }
+    .resize-handle:hover, .resize-handle.dragging { background: #0969da; }
+    .sidebar-head {
+      padding: 10px 14px; font-size: 11px; font-weight: 600;
+      color: #57606a; text-transform: uppercase; letter-spacing: .6px;
+      background: #f6f8fa; border-bottom: 1px solid #d0d7de; flex-shrink: 0;
+    }
+    .file-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 14px; border-bottom: 1px solid #f0f0f0; font-size: 12px;
+      user-select: none;
+    }
+    .file-item.rb  { cursor: pointer; }
+    .file-item.rb:hover { background: #f6f8fa; }
+    .file-item.rb.on { background: #dbeafe; }
+    .file-item.rb.on .fname { color: #1d4ed8; font-weight: 600; }
+    .ficon  { flex-shrink: 0; font-size: 14px; }
+    .fname  { flex: 1; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fsize  { color: #8b949e; font-size: 11px; white-space: nowrap; }
+
+    /* ── Virtual folders ──────────────────────────────────────────────────── */
+    .folder-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 14px; border-bottom: 1px solid #e8eaed;
+      cursor: pointer; user-select: none; font-size: 13px; font-weight: 600;
+      color: #24292f;
+    }
+    .folder-row:hover { background: #f6f8fa; }
+    .folder-row.open  { background: #f0f4ff; color: #1d4ed8; }
+    .folder-chevron   { font-size: 9px; color: #8b949e; transition: transform .15s; flex-shrink: 0; }
+    .folder-row.open .folder-chevron { transform: rotate(90deg); color: #1d4ed8; }
+    .folder-children  { display: none; background: #fafafa; border-bottom: 1px solid #e8eaed; }
+    .folder-children.open { display: block; }
+    .folder-children .file-item { padding-left: 32px; border-bottom: 1px solid #f0f0f0; }
+    .folder-children .file-item:last-child { border-bottom: none; }
+
+    /* ── Main panel ───────────────────────────────────────────────────────── */
+    .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+
+    .placeholder {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; height: 60vh; color: #57606a; gap: 10px; text-align: center;
+    }
+    .placeholder .big-icon { font-size: 42px; }
+    .placeholder p { font-size: 14px; line-height: 1.7; }
+    .placeholder code { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+
+    .notice     { padding: 10px 0; color: #57606a; font-size: 13px; }
+    .notice.err { color: #cf222e; }
+
+    /* ── Analysis header ──────────────────────────────────────────────────── */
+    .a-hdr         { margin-bottom: 28px; }
+    .a-hdr h2      { font-size: 22px; font-weight: 600; margin-bottom: 10px; }
+    .badge-row     { display: flex; flex-wrap: wrap; gap: 6px; }
+    .badge         { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+    .b-merchant    { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+    .b-parent      { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+    .b-encoding    { background: #fef9c3; color: #713f12; border-color: #fde68a; }
+    .b-api         { background: #fdf4ff; color: #6b21a8; border-color: #e9d5ff; }
+
+    /* ── Section ──────────────────────────────────────────────────────────── */
+    .section   { margin-bottom: 36px; }
+    .sec-hdr   { font-size: 15px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #d0d7de; }
+    .sec-note  { font-size: 13px; color: #57606a; font-style: italic; margin-bottom: 12px; line-height: 1.6; }
+    .sec-desc  { font-size: 12px; font-weight: 400; color: #8b949e; margin-left: 8px; }
+    .sec-note code { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 3px; padding: 1px 5px; font-style: normal; font-size: 12px; }
+
+    /* ── Mapping table ────────────────────────────────────────────────────── */
+    .mtable {
+      width: 100%; border-collapse: collapse; background: #fff;
+      border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; font-size: 13px;
+    }
+    .mtable th {
+      padding: 8px 14px; text-align: left; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .5px;
+      color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de;
+    }
+    .mtable td             { padding: 10px 14px; vertical-align: top; border-bottom: 1px solid #f3f4f6; }
+    .mtable tbody tr:last-child td { border-bottom: none; }
+    .mtable tbody tr:hover td      { background: #fafafa; }
+    .mtable tr.dim td      { opacity: .42; }
+    .mtable tr.dim:hover td { opacity: .72; }
+
+    /* ── Override table (for super-delegating classes) ────────────────────── */
+    .otable { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; font-size: 13px; }
+    .otable th { padding: 7px 14px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de; }
+    .otable td { padding: 9px 14px; border-bottom: 1px solid #f3f4f6; font-family: ui-monospace, monospace; font-size: 12px; }
+    .otable tbody tr:last-child td { border-bottom: none; }
+
+    /* ── Cell: internal field ─────────────────────────────────────────────── */
+    .fname-code { font-family: ui-monospace, monospace; font-size: 12px; font-weight: 600; color: #0550ae; }
+
+    /* ── Cell: feed columns ───────────────────────────────────────────────── */
+    .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tag  { font-family: ui-monospace, monospace; font-size: 11px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 2px 7px; }
+    .tag.empty { background: none; border: none; color: #8b949e; font-style: italic; }
+
+    /* ── Cell: transformation ─────────────────────────────────────────────── */
+    .xform  { display: flex; flex-direction: column; gap: 5px; }
+    .xbadge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; width: fit-content; }
+    .x-direct   { background: #dcfce7; color: #15803d; }
+    .x-inline   { background: #eff6ff; color: #1d4ed8; }
+    .x-builder  { background: #fdf4ff; color: #7e22ce; }
+    .x-constant { background: #f1f5f9; color: #64748b; }
+    .x-computed { background: #f1f5f9; color: #64748b; }
+    .xnote { font-family: ui-monospace, monospace; font-size: 11px; color: #57606a; }
+
+    /* ── Sub-mappings (inside builder rows) ───────────────────────────────── */
+    .submaps  { border-left: 2px solid #d8b4fe; padding: 4px 0 4px 10px; display: flex; flex-direction: column; gap: 3px; }
+    .submap   { display: flex; align-items: baseline; gap: 5px; font-size: 12px; }
+    .subkey   { font-family: ui-monospace, monospace; font-size: 11px; color: #7e22ce; font-weight: 600; flex-shrink: 0; }
+    .subarrow { color: #8b949e; font-size: 10px; flex-shrink: 0; }
+
+    /* ── Inherited section ────────────────────────────────────────────────── */
+    .inherited-section { margin-bottom: 36px; }
+    .inherited-hdr {
+      font-size: 15px; font-weight: 600; margin-bottom: 12px;
+      padding-bottom: 8px; border-bottom: 2px solid #e2e8f0;
+      color: #475569; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .inherited-from {
+      font-size: 12px; font-weight: 500; font-family: ui-monospace, monospace;
+      color: #7c3aed; background: #f5f3ff; border: 1px solid #ddd6fe;
+      border-radius: 4px; padding: 2px 8px;
+    }
+    .mtable.inherited th { background: #f8fafc; color: #94a3b8; }
+    .mtable.inherited .fname-code { color: #4f6896; }
+    .mtable.inherited .tag { background: #f8fafc; border-color: #e2e8f0; color: #64748b; }
+    .mtable.inherited tr.dim td { opacity: .35; }
+
+    /* ── Collapsible code snippet ─────────────────────────────────────────── */
+    .snip-btn {
+      display: inline-flex; align-items: center;
+      font-size: 11px; color: #7e22ce; cursor: pointer;
+      background: none; border: none; padding: 0; font-family: inherit;
+      text-decoration: underline; text-decoration-style: dotted;
+    }
+    .snip-btn:hover { color: #6b21a8; }
+    .code-block {
+      display: none; background: #161b22; color: #c9d1d9;
+      border-radius: 6px; padding: 12px 14px;
+      font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+      font-size: 11px; line-height: 1.65; overflow-x: auto; white-space: pre;
+      margin-top: 4px; max-height: 300px; overflow-y: auto;
+    }
+    .code-block.open { display: block; }
+  </style>
+</head>
+
+<body>
+  <div class="topbar">
+    <span class="repo">item-feeds</span>
+    <span class="sep">/</span>
+    <span class="path">app / lib / collectors / process_chunks</span>
+  </div>
+
+  <div class="shell">
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-head">Files</div>
+      <div id="file-list"><div class="notice">Loading…</div></div>
+    </nav>
+    <div class="resize-handle" id="resize-handle"></div>
+
+    <main class="main" id="main">
+      <div class="placeholder">
+        <div class="big-icon">📋</div>
+        <p>Select a retailer to inspect<br>its feed field mappings.</p>
+      </div>
+    </main>
+  </div>
+
+<script>
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────
+const TOKEN = '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';
+const REF   = '4b745fc0e13b14d75417190bcd1d0224c6bbb952';
+const PATH  = 'app/lib/collectors/process_chunks';
+const REPO  = 'wishabi/item-feeds';
+
+// ── GitHub API ────────────────────────────────────────────────────────────
+async function ghGet(url) {
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.message || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+function fmtSize(b) {
+  return !b ? '—' : b < 1024 ? `${b} B` : `${(b / 1024).toFixed(1)} KB`;
+}
+
+function friendlyName(filename) {
+  return filename.replace(/\.rb$/, '').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+// ── Virtual folder definitions ────────────────────────────────────────────
+const FOLDERS = [
+  { label: 'Single feeds', path: 'app/lib/collectors/process_chunks' },
+  { label: 'Ecom feeds',   path: 'app/lib/collectors/process_chunks/products' },
+  { label: 'Local feeds',  path: 'app/lib/collectors/process_chunks/local' },
+];
+
+const _folderCache = {};
+
+// ── Sidebar ───────────────────────────────────────────────────────────────
+function loadList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = FOLDERS.map((f, i) => `
+    <div class="folder-row" data-idx="${i}">
+      <span class="folder-chevron">▶</span>
+      <span class="ficon">📁</span>
+      <span class="fname">${f.label}</span>
+    </div>
+    <div class="folder-children" id="fc-${i}"></div>
+  `).join('');
+  el.querySelectorAll('.folder-row').forEach(row =>
+    row.addEventListener('click', () => toggleFolder(row))
+  );
+}
+
+async function toggleFolder(row) {
+  const idx      = parseInt(row.dataset.idx);
+  const folder   = FOLDERS[idx];
+  const children = document.getElementById(`fc-${idx}`);
+  const isOpen   = row.classList.contains('open');
+
+  // Toggle
+  row.classList.toggle('open', !isOpen);
+  children.classList.toggle('open', !isOpen);
+  row.querySelector('.ficon').textContent = isOpen ? '📁' : '📂';
+
+  if (isOpen || _folderCache[folder.path]) return; // closing, or already loaded
+
+  children.innerHTML = `<div class="notice" style="padding-left:32px">Loading…</div>`;
+  try {
+    const files = await ghGet(
+      `https://api.github.com/repos/${REPO}/contents/${folder.path}?ref=${REF}`
+    );
+    _folderCache[folder.path] = files
+      .filter(f => f.type === 'file' && f.name.endsWith('.rb'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    children.innerHTML = _folderCache[folder.path].map(f =>
+      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}">
+        <span class="ficon">💎</span>
+        <span class="fname">${friendlyName(f.name)}</span>
+        <span class="fsize">${fmtSize(f.size)}</span>
+      </div>`
+    ).join('') || `<div class="notice" style="padding-left:32px">No .rb files found.</div>`;
+
+    children.querySelectorAll('.file-item.rb').forEach(r =>
+      r.addEventListener('click', () => openFile(r))
+    );
+  } catch (e) {
+    children.innerHTML = `<div class="notice err" style="padding-left:32px">Error: ${e.message}</div>`;
+  }
+}
+
+async function openFile(row) {
+  document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
+  row.classList.add('on');
+
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="notice">Fetching…</div>';
+
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${REPO}/contents/${row.dataset.path}?ref=${REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const res = analyzeCollector(src);
+
+    // Fetch parent if: no mappings at all, OR base_mapping merges from super
+    if ((!res.product && !res.offer && !res.mapping || res.mappingCallsSuper) && res.parentClassFull) {
+      res.inherited = await fetchParentAnalysis(res.parentClassFull);
+    }
+
+    main.innerHTML = renderAnalysis(res, row.dataset.name);
+
+    // Wire collapsible snippet buttons
+    main.querySelectorAll('.snip-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const isOpen = btn.nextElementSibling.classList.toggle('open');
+        btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+      })
+    );
+  } catch (e) {
+    main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+// ── Ruby parser ───────────────────────────────────────────────────────────
+
+/**
+ * Extract all method bodies keyed by name.
+ * Uses same-indentation 'end' to detect method boundaries —
+ * reliable for standard Ruby formatting.
+ */
+function extractMethods(source) {
+  const methods = {};
+  const lines   = source.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const defM = lines[i].match(/^( +)def (?:self\.)?(\w+[?!]?)/);
+    if (defM) {
+      const [, indent, name] = defM;
+      const body  = [];
+      const endRe = new RegExp(`^${indent}end\\s*$`);
+      i++;
+      while (i < lines.length && !endRe.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      methods[name] = body.join('\n');
+      i++; // skip the 'end' line
+    } else {
+      i++;
+    }
+  }
+  return methods;
+}
+
+/** Return all unique row['COLUMN'] references found in a text block. */
+function rowRefs(text) {
+  const cols = [];
+  const re   = /row\[['"]([^'"]+)['"]\]/g;
+  let m;
+  while ((m = re.exec(text)) !== null)
+    if (!cols.includes(m[1])) cols.push(m[1]);
+  return cols;
+}
+
+/**
+ * Like rowRefs but also follows one level of internal method calls.
+ * e.g. skip calls in_stock(row) — this surfaces availability_FR from in_stock's body.
+ */
+function rowRefsDeep(body, methods, _seen = new Set()) {
+  const cols = rowRefs(body);
+  const re = /\b([\w?!]+)\((?:row|raw_item)\b/g;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    const name = m[1];
+    if (methods[name] && !_seen.has(name)) {
+      _seen.add(name);
+      rowRefsDeep(methods[name], methods, _seen)
+        .forEach(c => { if (!cols.includes(c)) cols.push(c); });
+    }
+  }
+  return cols;
+}
+
+/** Top-level analysis: class metadata + product/offer field maps. */
+function analyzeCollector(src) {
+  const out = {
+    className:        null,
+    parentClass:      null,
+    merchantIds:      [],
+    encodingOverride: null,
+    hasExpandItem:    /def expand_item/.test(src),
+    product:          null,  // pattern 1: explicit base_product
+    offer:            null,  // pattern 1: explicit base_offer
+    mapping:          null,  // pattern 2: declarative base_mapping
+    hooks:            null,  // patterns 2 & 3: base_price, base_availability, etc.
+  };
+
+  const cm = src.match(/class\s+(\w+)\s*<\s*([\w:]+)/);
+  if (cm) {
+    out.className        = cm[1];
+    out.parentClass      = cm[2].split('::').pop();
+    out.parentClassFull  = cm[2];
+  }
+
+  // merchant_ids may span to the next line: def merchant_ids\n  [208]
+  const mm = src.match(/def merchant_ids\s+\[([^\]]+)\]/);
+  if (mm) out.merchantIds = mm[1].split(',').map(s => s.trim());
+
+  const em = src.match(/def encoding\s+['"]([^'"]+)['"]/);
+  if (em) out.encodingOverride = em[1];
+
+  const methods = extractMethods(src);
+
+  // Detect base_model (Product / Offer / MetaItem etc.)
+  if (methods.base_model) {
+    const mm = methods.base_model.match(/\b(Product|Offer|MetaItem|OffersProduct)\b/);
+    if (mm) out.baseModel = mm[1];
+  }
+
+  // Pattern 1 — explicit builder methods
+  if (methods.base_product) out.product = analyzeBase(methods.base_product, methods);
+  if (methods.base_offer)   out.offer   = analyzeBase(methods.base_offer,   methods);
+
+  // Pattern 2 — declarative mapping hash
+  if (methods.base_mapping) {
+    out.mapping = analyzeBaseMapping(methods.base_mapping);
+    out.mappingCallsSuper = /\bsuper\b/.test(methods.base_mapping);
+  }
+
+  // Pattern 4 — Product-folder style: each Product attribute has its own base_* method
+  const PRIMARY_PRODUCT_METHODS = new Set([
+    'base_metadata', 'base_details', 'base_additional_ids',
+    'base_categories', 'base_content_internal', 'base_pricing',
+    'base_offer_details', 'base_product_details',
+  ]);
+  const productMethodEntries = Object.entries(methods)
+    .filter(([name]) => PRIMARY_PRODUCT_METHODS.has(name));
+  if (productMethodEntries.length) {
+    out.productMethods = productMethodEntries.map(([name, body]) => ({
+      field:        name.replace(/^base_/, ''), // strip prefix for display
+      methodName:   name,
+      feedCols:     rowRefsDeep(body, methods),
+      builderMethod: name,
+      builderBody:  body,
+      subMaps:      extractSubMapsDeduped(body, methods),
+      type:         'builder',
+    }));
+  }
+
+  // Collect all builder method names already surfaced in the mapping sections
+  // so they are excluded from Custom Logic (avoid showing them twice)
+  const usedBuilders = new Set();
+  const gatherBuilders = (entries) => {
+    if (!Array.isArray(entries)) return;
+    entries.forEach(e => { if (e.builderMethod) usedBuilders.add(e.builderMethod); });
+  };
+  gatherBuilders(out.product);
+  gatherBuilders(out.offer);
+  (out.productMethods || []).forEach(m => usedBuilders.add(m.methodName));
+
+  // Hooks — dynamically discovered; exclude primary product methods and used builders
+  const SKIP_METHODS = new Set([
+    'base_mapping', 'base_product', 'base_offer',
+    'merchant_ids', 'base_model', 'collect', 'expand_item',
+    ...PRIMARY_PRODUCT_METHODS,
+  ]);
+  const hooks = Object.entries(methods)
+    .filter(([name, body]) => {
+      if (SKIP_METHODS.has(name) || usedBuilders.has(name)) return false;
+      return /^base_/.test(name) || /^before_/.test(name) || /^after_/.test(name)
+          || ['skip', 'quote_char', 'delimiter'].includes(name)
+          || rowRefs(body).length > 0;
+    })
+    .map(([name, body]) => ({ name, feedCols: rowRefsDeep(body, methods), body }));
+  if (hooks.length) out.hooks = hooks;
+
+  return out;
+}
+
+/**
+ * Parse a base_mapping method body.
+ * Handles both symbol keys:  field: 'Feed Column'
+ * and string keys (rare):    'field' => 'Feed Column'
+ */
+function analyzeBaseMapping(body) {
+  const mappings = [];
+  // symbol key: 'Column Name'  or  symbol key: "Column Name"
+  const re = /(\w+):\s*['"]([^'"]+)['"]/g;
+  let m;
+  while ((m = re.exec(body)) !== null)
+    mappings.push({ field: m[1], feedCol: m[2] });
+  return mappings.length ? mappings : null;
+}
+
+/**
+ * Parse the body of base_product or base_offer.
+ * Returns either a { type:'super', modifications } descriptor
+ * or an array of field-mapping entries.
+ */
+function analyzeBase(body, methods) {
+  // Sub-class that delegates to parent via super
+  if (/\bsuper\b/.test(body)) {
+    const mods = [];
+    const re   = /([\w]+(?:\.[\w]+)+)\s*=\s*(.+)/g;
+    let m;
+    while ((m = re.exec(body)) !== null)
+      mods.push({ field: m[1], expr: m[2].trim() });
+    return { type: 'super', modifications: mods };
+  }
+
+  // Detect the indentation of hash keys inside the .new(…) call
+  let hashIndent = 10; // sensible default
+  for (const line of body.split('\n')) {
+    const nm = line.match(/^(\s+)\w+\.new\(/);
+    if (nm) { hashIndent = nm[1].length + 2; break; }
+  }
+
+  return body.split('\n').reduce((acc, line) => {
+    const trimmed = line.trimStart();
+    if (line.length - trimmed.length !== hashIndent) return acc;
+    const kv = trimmed.match(/^(\w+):\s+(.+?)(?:,\s*)?$/);
+    if (kv) acc.push(classifyEntry(kv[1], kv[2].trim().replace(/,\s*$/, ''), methods));
+    return acc;
+  }, []);
+}
+
+/** Classify a single key: value pair into a typed mapping entry. */
+function classifyEntry(field, expr, methods) {
+  const base = {
+    field, expr,
+    feedCols:     rowRefs(expr),
+    type:         'unknown',
+    note:         '',
+    builderMethod: null,
+    builderBody:  null,
+    subMaps:      null,
+  };
+
+  // Literal constants: nil, [], {}, 'string', :symbol, number
+  if (/^(nil|true|false|\[\]|\{\}|'[^']*'|"[^"]*"|\d[\d.]*|:[a-z_]+)$/.test(expr))
+    return { ...base, type: 'constant', note: expr };
+
+  // Any method call for which we have source
+  const callM    = expr.match(/^(\w+)\(/);
+  const mName    = callM ? callM[1] : (methods[expr] ? expr : null);
+  if (mName && methods[mName]) {
+    const mbody = methods[mName];
+    return {
+      ...base,
+      type:          'builder',
+      feedCols:      rowRefs(mbody),
+      builderMethod: mName,
+      builderBody:   mbody,
+      subMaps:       extractSubMaps(mbody, methods),
+    };
+  }
+
+  // Bare row reference
+  if (/^row\[['"][^'"]+['"]\]$/.test(expr))
+    return { ...base, type: 'direct' };
+
+  // Inline expression that reads row columns
+  if (base.feedCols.length) {
+    let note = '';
+    if (expr.includes('||')) note = `fallback: ${expr.split(/\s*\|\|\s*/)[1]}`;
+    else if (expr.includes('?')) note = 'conditional';
+    else if (expr.includes('.presence')) note = '.presence';
+    return { ...base, type: 'inline', note };
+  }
+
+  // Derived from context (instance vars, fixed values, etc.)
+  return { ...base, type: 'computed' };
+}
+
+/**
+ * Extract sub-field → feed-column mappings from a builder method body.
+ * Follows one level of nested method calls.
+ */
+function extractSubMaps(body, methods) {
+  const subs = [];
+  for (const line of body.split('\n')) {
+    const t  = line.trimStart();
+    const kv = t.match(/^(\w+):\s+(.+?)(?:,\s*)?$/);
+    if (!kv) continue;
+    const subExpr = kv[2].trim().replace(/,\s*$/, '');
+    let   cols    = rowRefs(subExpr);
+    // One-level follow for nested builder calls
+    if (!cols.length) {
+      const nm = subExpr.match(/^([\w?!]+)\(/)
+              || subExpr.match(/self\.(?:class\.)?([\w?!]+)\(/);
+      if (nm && methods[nm[1]]) cols = rowRefs(methods[nm[1]]);
+    }
+    if (cols.length || subExpr === 'nil')
+      subs.push({ subField: kv[1], cols, expr: subExpr });
+  }
+  return subs.length ? subs : null;
+}
+
+/**
+ * Like extractSubMaps but deduplicates sub-field names across bilingual hashes.
+ * e.g. base_details returns both 'en' and 'fr' keys that both define `name:` —
+ * this merges them into one row: name ← [title_EN, title_FR]
+ */
+function extractSubMapsDeduped(body, methods) {
+  const raw = extractSubMaps(body, methods);
+  if (!raw) return null;
+  const map = new Map();
+  for (const sub of raw) {
+    if (!map.has(sub.subField)) {
+      map.set(sub.subField, { subField: sub.subField, cols: [...sub.cols], expr: sub.expr });
+    } else {
+      const existing = map.get(sub.subField);
+      sub.cols.forEach(c => { if (!existing.cols.includes(c)) existing.cols.push(c); });
+    }
+  }
+  return map.size ? [...map.values()] : null;
+}
+
+// ── Parent class resolution ───────────────────────────────────────────────
+
+/** CamelCase → snake_case */
+function toSnakeCase(str) {
+  return str.replace(/([A-Z])/g, (m, l, i) => (i > 0 ? '_' : '') + l.toLowerCase());
+}
+
+/**
+ * Convert a fully-qualified Ruby class name to a path relative to process_chunks/.
+ * e.g. Collectors::ProcessChunks::Shared::GoogleFeed → shared/google_feed.rb
+ *      Collectors::ProcessChunks::ShoppersDrugMart   → shoppers_drug_mart.rb
+ */
+function resolveParentPath(fullClass) {
+  const rel = fullClass.replace(/^Collectors::ProcessChunks::/, '');
+  if (!rel) return null;
+  return rel.split('::').map(toSnakeCase).join('/') + '.rb';
+}
+
+/** Fetch and analyse a parent class file, return its mapping data (or null on failure). */
+async function fetchParentAnalysis(fullParentClass) {
+  const relPath = resolveParentPath(fullParentClass);
+  if (!relPath) return null;
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${REPO}/contents/${PATH}/${relPath}?ref=${REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const res = analyzeCollector(src);
+    return {
+      className: res.className,
+      parentClass: res.parentClass,
+      mapping:  res.mapping,
+      product:  res.product,
+      offer:    res.offer,
+    };
+  } catch (_) {
+    return null; // parent file not found or not parseable — degrade silently
+  }
+}
+
+// ── Renderer ──────────────────────────────────────────────────────────────
+
+const H = s => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+
+function renderAnalysis(res, filename) {
+  // CamelCase → spaced words for display
+  const title = res.className
+    ? res.className.replace(/([A-Z])/g, ' $1').trim()
+    : filename.replace('.rb', '');
+
+  let html = `<div class="a-hdr">
+    <h2>${H(title)}</h2>
+    <div class="badge-row">`;
+  if (res.merchantIds.length)  html += `<span class="badge b-merchant">🏪 Merchant #${res.merchantIds.join(', ')}</span>`;
+  if (res.parentClass)         html += `<span class="badge b-parent">extends ${H(res.parentClass)}</span>`;
+  if (res.encodingOverride)    html += `<span class="badge b-encoding">encoding: ${H(res.encodingOverride)}</span>`;
+  if (res.hasExpandItem)       html += `<span class="badge b-api">⚡ API enrichment</span>`;
+  html += `</div></div>`;
+
+  // Pattern 1 — explicit builders
+  if (res.product) html += renderSection('📦  Product Fields', res.product);
+  if (res.offer)   html += renderSection('🏷️  Offer Fields',   res.offer);
+
+  // Pattern 4 — Product/Local-folder style (base_metadata, base_details, etc.)
+  if (res.productMethods) {
+    html += renderProductMethodsSection(res.productMethods, res.mapping, res.baseModel);
+  } else {
+    // Pattern 2 — declarative mapping + hooks (standard files)
+    if (res.mapping && !res.mappingCallsSuper) html += renderMappingSection(res.mapping);
+    if (res.mapping && res.mappingCallsSuper)  html += renderMappingOverrides(res.mapping);
+  }
+
+  // Inherited mapping from parent class (pattern 3, fetched async)
+  if (res.inherited) html += renderInheritedSection(res.inherited);
+
+  // Hooks (patterns 2 & 3)
+  if (res.hooks) html += renderHooksSection(res.hooks);
+
+  return html;
+}
+
+function renderMappingSection(mappings) {
+  let html = `<div class="section">
+    <div class="sec-hdr">📋  Field Mappings <span class="sec-desc">Direct column → field assignments, no transformation</span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:160px">Internal field</th>
+        <th>Feed column</th>
+      </tr></thead>
+      <tbody>`;
+  mappings.forEach(m => {
+    html += `<tr>
+      <td><span class="fname-code">${H(m.field)}</span></td>
+      <td><span class="tag">${H(m.feedCol)}</span></td>
+    </tr>`;
+  });
+  return html + `</tbody></table></div>`;
+}
+
+/**
+ * Renders Product-folder files where each attribute is its own base_* method.
+ * Combines base_mapping direct entries (top) with base_* method entries (below).
+ */
+function renderProductMethodsSection(productMethods, baseMapping, baseModel) {
+  const ICONS   = { Product: '📦', Offer: '🏷️', MetaItem: '📋', OffersProduct: '🏷️' };
+  const LABELS  = { Product: 'Product Fields', Offer: 'Offer Fields', MetaItem: 'Fields', OffersProduct: 'Offer Fields' };
+  const icon    = ICONS[baseModel]  || '📋';
+  const label   = LABELS[baseModel] || 'Fields';
+  const DESCS = { Product: 'How each product attribute is built from the feed', Offer: 'How each offer attribute is built from the feed', MetaItem: 'How each field is built from the feed', OffersProduct: 'How each offer attribute is built from the feed' };
+  let html = `<div class="section">
+    <div class="sec-hdr">${icon}  ${label} <span class="sec-desc">${DESCS[baseModel] || 'How each field is built from the feed'}</span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:150px">Internal field</th>
+        <th style="width:220px">Feed column(s)</th>
+        <th>Transformation</th>
+      </tr></thead>
+      <tbody>`;
+
+  // base_mapping direct entries first
+  if (baseMapping) {
+    baseMapping.forEach(m => {
+      html += `<tr>
+        <td><span class="fname-code">${H(m.field)}</span></td>
+        <td><div class="tags"><span class="tag">${H(m.feedCol)}</span></div></td>
+        <td><div class="xform"><span class="xbadge x-direct">direct</span></div></td>
+      </tr>`;
+    });
+  }
+
+  // base_* method entries — rendered exactly like builder entries
+  productMethods.forEach(entry => {
+    html += `<tr>
+      <td><span class="fname-code">${H(entry.field)}</span></td>
+      <td>${renderCols(entry.feedCols)}</td>
+      <td>${renderXform(entry)}</td>
+    </tr>`;
+  });
+
+  return html + `</tbody></table></div>`;
+}
+
+function renderMappingOverrides(mappings) {
+  let html = `<div class="section">
+    <div class="sec-hdr">🔀  Local Mapping Overrides <span class="sec-desc">Fields this collector overrides from its parent via <code>super.merge</code></span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:160px">Internal field</th>
+        <th>Overridden feed column</th>
+      </tr></thead>
+      <tbody>`;
+  mappings.forEach(m => {
+    html += `<tr>
+      <td><span class="fname-code">${H(m.field)}</span></td>
+      <td><span class="tag">${H(m.feedCol)}</span></td>
+    </tr>`;
+  });
+  return html + `</tbody></table></div>`;
+}
+
+function renderHooksSection(hooks) {
+  let html = `<div class="section">
+    <div class="sec-hdr">⚙️  Custom Logic <span class="sec-desc">Hook methods that override specific parsing behaviours</span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:190px">Hook</th>
+        <th style="width:220px">Feed column(s) read</th>
+        <th>Code</th>
+      </tr></thead>
+      <tbody>`;
+  hooks.forEach(h => {
+    html += `<tr>
+      <td><span class="fname-code">${H(h.name)}</span></td>
+      <td>${renderCols(h.feedCols)}</td>
+      <td><div class="xform">
+        <button class="snip-btn">▼ view code</button>
+        <pre class="code-block">${H(h.body)}</pre>
+      </div></td>
+    </tr>`;
+  });
+  return html + `</tbody></table></div>`;
+}
+
+const SECTION_DESCS = {
+  '📦  Product Fields': 'How each product attribute is built from the feed',
+  '🏷️  Offer Fields':   'How each offer attribute is built from the feed',
+  '📦  Product Fields (inherited)': 'Product mappings inherited from parent class',
+  '🏷️  Offer Fields (inherited)':   'Offer mappings inherited from parent class',
+};
+function renderSection(title, data) {
+  const desc = SECTION_DESCS[title] || '';
+  let html = `<div class="section"><div class="sec-hdr">${title}${desc ? ` <span class="sec-desc">${desc}</span>` : ''}</div>`;
+
+  // Super-delegating class (e.g. Pharmaprix)
+  if (data.type === 'super') {
+    html += `<p class="sec-note">Inherits all mappings from parent class (<code>super</code>)`;
+    if (data.modifications.length)
+      html += ` — post-processes: ${data.modifications.map(m => `<code>${H(m.field)}</code>`).join(', ')}`;
+    html += `.</p>`;
+    if (data.modifications.length) {
+      html += `<table class="otable">
+        <thead><tr><th>Field override</th><th>Expression</th></tr></thead>
+        <tbody>`;
+      data.modifications.forEach(m => {
+        html += `<tr><td>${H(m.field)}</td><td>${H(m.expr)}</td></tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    return html + `</div>`;
+  }
+
+  if (!data.length) {
+    html += `<p class="sec-note">No field mappings could be parsed.</p>`;
+    return html + `</div>`;
+  }
+
+  html += `<table class="mtable">
+    <thead>
+      <tr>
+        <th style="width:150px">Internal field</th>
+        <th style="width:220px">Feed column(s)</th>
+        <th>Transformation</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  data.forEach(entry => {
+    const dim = entry.type === 'constant' || entry.type === 'computed';
+    html += `<tr${dim ? ' class="dim"' : ''}>
+      <td><span class="fname-code">${H(entry.field)}</span></td>
+      <td>${renderCols(entry.feedCols)}</td>
+      <td>${renderXform(entry)}</td>
+    </tr>`;
+  });
+
+  return html + `</tbody></table></div>`;
+}
+
+function renderCols(cols) {
+  if (!cols || !cols.length) return `<span class="tag empty">—</span>`;
+  return `<div class="tags">${cols.map(c => `<span class="tag">${H(c)}</span>`).join('')}</div>`;
+}
+
+function renderXform(entry) {
+  let html = `<div class="xform">`;
+
+  switch (entry.type) {
+    case 'direct':
+      html += `<span class="xbadge x-direct">direct</span>`;
+      break;
+
+    case 'inline':
+      html += `<span class="xbadge x-inline">inline</span>`;
+      if (entry.note) html += `<span class="xnote">${H(entry.note)}</span>`;
+      break;
+
+    case 'builder':
+      html += `<span class="xbadge x-builder">${H(entry.builderMethod)}</span>`;
+      if (entry.subMaps) {
+        html += `<div class="submaps">`;
+        entry.subMaps.forEach(s => {
+          const colsHtml = s.cols.length
+            ? s.cols.map(c => `<span class="tag">${H(c)}</span>`).join('')
+            : `<span class="tag empty">nil</span>`;
+          html += `<div class="submap">
+            <span class="subkey">${H(s.subField)}</span>
+            <span class="subarrow">←</span>
+            <span class="tags">${colsHtml}</span>
+          </div>`;
+        });
+        html += `</div>`;
+      }
+      if (entry.builderBody)
+        html += `<button class="snip-btn">▼ view code</button><pre class="code-block">${H(entry.builderBody)}</pre>`;
+      break;
+
+    case 'constant':
+      html += `<span class="xbadge x-constant">constant</span><span class="xnote">${H(entry.note)}</span>`;
+      break;
+
+    case 'computed':
+      html += `<span class="xbadge x-computed">computed</span>`;
+      html += `<span class="xnote">${H(entry.expr.substring(0, 60))}</span>`;
+      break;
+
+    default:
+      html += `<span class="xnote">${H(entry.expr)}</span>`;
+  }
+
+  return html + `</div>`;
+}
+
+function renderInheritedSection(inherited) {
+  const fromLabel = inherited.className || 'parent class';
+  let html = `<div class="inherited-section">
+    <div class="inherited-hdr">
+      📥 Inherited field mapping
+      <span class="inherited-from">${H(fromLabel)}</span>
+      <span class="sec-desc">Base mappings defined in the parent class</span>
+    </div>`;
+
+  // Declarative mapping from parent
+  if (inherited.mapping) {
+    html += `<table class="mtable inherited">
+      <thead><tr>
+        <th style="width:160px">Internal field</th>
+        <th>Feed column</th>
+      </tr></thead>
+      <tbody>`;
+    inherited.mapping.forEach(m => {
+      html += `<tr>
+        <td><span class="fname-code">${H(m.field)}</span></td>
+        <td><span class="tag">${H(m.feedCol)}</span></td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+  }
+
+  // Explicit builders from parent (e.g. ShoppersDrugMart for Pharmaprix)
+  if (inherited.product) html += renderSection('📦  Product Fields (inherited)', inherited.product);
+  if (inherited.offer)   html += renderSection('🏷️  Offer Fields (inherited)',   inherited.offer);
+
+  if (!inherited.mapping && !inherited.product && !inherited.offer) {
+    html += `<p class="sec-note">Parent class found but no parseable field mapping detected.</p>`;
+  }
+
+  return html + `</div>`;
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+loadList();
+
+// ── Sidebar resize ────────────────────────────────────────────────────────
+(function () {
+  const handle  = document.getElementById('resize-handle');
+  const sidebar = document.getElementById('sidebar');
+  let startX, startWidth;
+
+  handle.addEventListener('mousedown', e => {
+    startX     = e.clientX;
+    startWidth = sidebar.offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor      = 'col-resize';
+    document.body.style.userSelect  = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!handle.classList.contains('dragging')) return;
+    const w = Math.max(150, Math.min(600, startWidth + (e.clientX - startX)));
+    sidebar.style.width = w + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!handle.classList.contains('dragging')) return;
+    handle.classList.remove('dragging');
+    document.body.style.cursor     = '';
+    document.body.style.userSelect = '';
+  });
+})();
+</script>
+</body>
+</html>
