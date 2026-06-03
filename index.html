@@ -23,6 +23,39 @@
     .topbar .repo { font-weight: 600; }
     .topbar .path { color: #8b949e; font-family: ui-monospace, monospace; font-size: 12px; }
     .topbar .spacer { flex: 1; }
+
+    /* ── Token gate ───────────────────────────────────────────────────────── */
+    .token-gate {
+      position: fixed; inset: 0; background: #f6f8fa;
+      display: flex; align-items: center; justify-content: center; z-index: 200;
+    }
+    .token-gate.hidden { display: none; }
+    .token-box {
+      background: white; border: 1px solid #d0d7de; border-radius: 10px;
+      padding: 32px 36px; width: 420px; display: flex; flex-direction: column; gap: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.08);
+    }
+    .token-box h2 { font-size: 17px; font-weight: 600; }
+    .token-box p  { font-size: 13px; color: #57606a; line-height: 1.6; }
+    .token-box p code { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 3px; padding: 1px 5px; }
+    .token-input {
+      padding: 8px 10px; font-size: 13px; font-family: ui-monospace, monospace;
+      border: 1px solid #d0d7de; border-radius: 6px; outline: none; width: 100%;
+    }
+    .token-input:focus { border-color: #0969da; box-shadow: 0 0 0 3px #dbeafe; }
+    .token-submit {
+      padding: 8px 16px; background: #0969da; color: white; border: none;
+      border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; align-self: flex-end;
+    }
+    .token-submit:hover { background: #0860ca; }
+    .token-err { font-size: 12px; color: #cf222e; display: none; }
+
+    .token-reset-btn {
+      background: none; border: 1px solid #444c56; color: #8b949e;
+      border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+    }
+    .token-reset-btn:hover { border-color: #8b949e; color: #e6edf3; }
+
     .dim-toggle {
       display: flex; align-items: center; gap: 6px;
       font-size: 12px; color: #8b949e; cursor: pointer; user-select: none; white-space: nowrap;
@@ -192,6 +225,16 @@
 </head>
 
 <body>
+  <div class="token-gate" id="token-gate">
+    <div class="token-box">
+      <h2>GitHub Token Required</h2>
+      <p>Enter a personal access token with read access to <code>wishabi/item-feeds</code>. It will be saved in your browser's local storage.</p>
+      <input class="token-input" id="token-input" type="password" placeholder="ghp_…" autocomplete="off" />
+      <span class="token-err" id="token-err">Invalid token — please check and try again.</span>
+      <button class="token-submit" id="token-submit">Connect</button>
+    </div>
+  </div>
+
   <div class="topbar">
     <span class="repo">item-feeds</span>
     <span class="sep">/</span>
@@ -201,6 +244,7 @@
       <input type="checkbox" id="hide-dim-toggle" checked>
       Hide non-feed fields
     </label>
+    <button class="token-reset-btn" id="token-reset-btn" title="Change token">🔑 Token</button>
   </div>
 
   <div class="shell">
@@ -222,7 +266,7 @@
 'use strict';
 
 // ── Config ────────────────────────────────────────────────────────────────
-const TOKEN = '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';
+let   TOKEN = localStorage.getItem('gh_token') || '';
 const REF   = '4b745fc0e13b14d75417190bcd1d0224c6bbb952';
 const PATH  = 'app/lib/collectors/process_chunks';
 const REPO  = 'wishabi/item-feeds';
@@ -968,8 +1012,54 @@ function renderInheritedSection(inherited) {
   return html + `</div>`;
 }
 
+// ── Token gate ────────────────────────────────────────────────────────────
+const tokenGate   = document.getElementById('token-gate');
+const tokenInput  = document.getElementById('token-input');
+const tokenSubmit = document.getElementById('token-submit');
+const tokenErr    = document.getElementById('token-err');
+const tokenReset  = document.getElementById('token-reset-btn');
+
+async function validateAndSaveToken(val) {
+  tokenErr.style.display = 'none';
+  tokenSubmit.textContent = 'Connecting…';
+  tokenSubmit.disabled = true;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}`, {
+      headers: { Authorization: `Bearer ${val}` }
+    });
+    if (!r.ok) throw new Error();
+    TOKEN = val;
+    localStorage.setItem('gh_token', TOKEN);
+    tokenGate.classList.add('hidden');
+    loadList();
+  } catch {
+    tokenErr.style.display = 'block';
+  } finally {
+    tokenSubmit.textContent = 'Connect';
+    tokenSubmit.disabled = false;
+  }
+}
+
+tokenSubmit.addEventListener('click', () => {
+  const val = tokenInput.value.trim();
+  if (val) validateAndSaveToken(val);
+});
+tokenInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') tokenSubmit.click();
+});
+tokenReset.addEventListener('click', () => {
+  localStorage.removeItem('gh_token');
+  TOKEN = '';
+  tokenInput.value = '';
+  tokenErr.style.display = 'none';
+  tokenGate.classList.remove('hidden');
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────
-loadList();
+if (TOKEN) {
+  tokenGate.classList.add('hidden');
+  loadList();
+}
 
 // ── Hide non-feed fields toggle ───────────────────────────────────────────
 const dimToggle = document.getElementById('hide-dim-toggle');
