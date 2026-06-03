@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ingestion Logic Mapper</title>
+  <title>process_chunks — Field Mapper</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -128,7 +128,10 @@
 
     /* ── Analysis header ──────────────────────────────────────────────────── */
     .a-hdr         { margin-bottom: 28px; }
-    .a-hdr h2      { font-size: 22px; font-weight: 600; margin-bottom: 10px; }
+    .a-hdr h2      { font-size: 22px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: baseline; gap: 10px; }
+    .a-hdr .file-ref { font-size: 13px; font-weight: 400; color: #57606a; }
+    .a-hdr .file-ref a { color: #0969da; text-decoration: none; font-family: ui-monospace, monospace; }
+    .a-hdr .file-ref a:hover { text-decoration: underline; }
     .badge-row     { display: flex; flex-wrap: wrap; gap: 6px; }
     .badge         { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
     .b-merchant    { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
@@ -372,7 +375,7 @@ async function openFile(row) {
       res.inherited = await fetchParentAnalysis(res.parentClassFull);
     }
 
-    main.innerHTML = renderAnalysis(res, row.dataset.name);
+    main.innerHTML = renderAnalysis(res, row.dataset.name, row.dataset.path);
 
     // Show dim toggle only if this file actually has non-feed (dim) rows
     const dimToggleEl = document.querySelector('.dim-toggle');
@@ -733,14 +736,18 @@ const H = s => String(s)
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;');
 
-function renderAnalysis(res, filename) {
+function renderAnalysis(res, filename, filepath) {
   // CamelCase → spaced words for display
   const title = res.className
     ? res.className.replace(/([A-Z])/g, ' $1').trim()
     : filename.replace('.rb', '');
 
+  const ghUrl = filepath
+    ? `https://github.com/${REPO}/blob/${REF}/${filepath}`
+    : null;
+
   let html = `<div class="a-hdr">
-    <h2>${H(title)}</h2>
+    <h2>${H(title)}${ghUrl ? `<span class="file-ref">(<a href="${ghUrl}" target="_blank" rel="noopener">${H(filename)}</a>)</span>` : ''}</h2>
     <div class="badge-row">`;
   if (res.merchantIds.length)  html += `<span class="badge b-merchant">🏪 Merchant #${res.merchantIds.join(', ')}</span>`;
   if (res.parentClass)         html += `<span class="badge b-parent">extends ${H(res.parentClass)}</span>`;
