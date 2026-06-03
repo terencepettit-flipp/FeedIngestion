@@ -769,7 +769,7 @@ function renderAnalysis(res, filename, filepath) {
   }
 
   // Inherited mapping from parent class (pattern 3, fetched async)
-  if (res.inherited) html += renderInheritedSection(res.inherited);
+  if (res.inherited) html += renderInheritedSection(res.inherited, res.mapping);
 
   // Hooks (patterns 2 & 3)
   if (res.hooks) html += renderHooksSection(res.hooks);
@@ -988,8 +988,11 @@ function renderXform(entry) {
   return html + `</div>`;
 }
 
-function renderInheritedSection(inherited) {
+function renderInheritedSection(inherited, localOverrides) {
   const fromLabel = inherited.className || 'parent class';
+  // Fields overridden locally via super.merge — exclude them from the inherited table
+  const overridden = new Set((localOverrides || []).map(m => m.field));
+
   let html = `<div class="inherited-section">
     <div class="inherited-hdr">
       📥 Inherited field mapping
@@ -997,21 +1000,24 @@ function renderInheritedSection(inherited) {
       <span class="sec-desc">Base mappings defined in the parent class</span>
     </div>`;
 
-  // Declarative mapping from parent
+  // Declarative mapping from parent (minus any fields overridden locally)
   if (inherited.mapping) {
-    html += `<table class="mtable inherited">
-      <thead><tr>
-        <th style="width:160px">Internal field</th>
-        <th>Feed column</th>
-      </tr></thead>
-      <tbody>`;
-    inherited.mapping.forEach(m => {
-      html += `<tr>
-        <td><span class="fname-code">${H(m.field)}</span></td>
-        <td><span class="tag">${H(m.feedCol)}</span></td>
-      </tr>`;
-    });
-    html += `</tbody></table>`;
+    const rows = inherited.mapping.filter(m => !overridden.has(m.field));
+    if (rows.length) {
+      html += `<table class="mtable inherited">
+        <thead><tr>
+          <th style="width:160px">Internal field</th>
+          <th>Feed column</th>
+        </tr></thead>
+        <tbody>`;
+      rows.forEach(m => {
+        html += `<tr>
+          <td><span class="fname-code">${H(m.field)}</span></td>
+          <td><span class="tag">${H(m.feedCol)}</span></td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
   }
 
   // Explicit builders from parent (e.g. ShoppersDrugMart for Pharmaprix)
