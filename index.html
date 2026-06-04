@@ -206,9 +206,22 @@
     tr.builder-hdr td   { border-bottom: none !important; }
     tr.sub-row td       { padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid #e8ebee; }
     tr.sub-row.group-end td { border-bottom: 1px solid #d0d7de; }
-    .sub-field-cell     { padding-left: 22px !important; }
-    .tree-conn          { color: #c084fc; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 5px; user-select: none; }
-    .sub-fname          { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #4080c8; }
+    /* Pure-CSS tree connectors */
+    .sub-field-cell { padding-left: 41px !important; position: relative; }
+    .sub-fname      { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #5a7ea0; }
+
+    tr.sub-row .sub-field-cell::before {
+      content: ''; position: absolute;
+      left: 21px; top: 0; bottom: -1px;
+      width: 1.2px; background: rgba(192, 132, 252, 0.35);
+    }
+    tr.sub-row.group-end .sub-field-cell::before { bottom: calc(100% - 13px); }
+
+    tr.sub-row .sub-field-cell::after {
+      content: ''; position: absolute;
+      left: 21px; top: 13px;
+      width: 13px; height: 1.2px; background: rgba(192, 132, 252, 0.35);
+    }
 
     /* ── Inherited section ────────────────────────────────────────────────── */
     .inherited-section { margin-bottom: 36px; }
@@ -1103,7 +1116,7 @@ function renderEntryRows(entry) {
     const last = i === entry.subMaps.length - 1;
     html += `<tr class="sub-row${last ? ' group-end' : ''}">
       <td class="sub-field-cell">
-        <span class="tree-conn">${last ? '└' : '├'}</span><span class="sub-fname">${H(s.subField)}</span>
+        <span class="sub-fname">${H(s.subField)}</span>
       </td>
       <td>${renderCols(s.cols)}</td>
       <td></td>
