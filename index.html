@@ -313,6 +313,7 @@ const FOLDERS = [
   { label: 'Single feeds', path: 'app/lib/collectors/process_chunks' },
   { label: 'Ecom feeds',   path: 'app/lib/collectors/process_chunks/products' },
   { label: 'Local feeds',  path: 'app/lib/collectors/process_chunks/local' },
+  { label: 'Chunkers',     path: 'app/lib/collectors/chunk_feeds' },
 ];
 
 const _folderCache = {};
@@ -383,6 +384,7 @@ async function openFile(row) {
       `https://api.github.com/repos/${REPO}/contents/${row.dataset.path}?ref=${REF}`
     );
     const src = atob(data.content.replace(/\n/g, ''));
+    await fetchInventoryEntryMap(); // ensure Entry method map is ready before analysis
     const res = analyzeCollector(src);
 
     // Fetch parent if: no mappings at all, OR base_mapping merges from super
@@ -442,6 +444,16 @@ function extractMethods(source) {
     }
   }
   return methods;
+}
+
+/** Return all unique raw['COLUMN'] references found in a text block (for InventoryDetails::Entry). */
+function rawRefs(text) {
+  const cols = [];
+  const re   = /\braw\[['"]([^'"]+)['"]\]/g;
+  let m;
+  while ((m = re.exec(text)) !== null)
+    if (!cols.includes(m[1])) cols.push(m[1]);
+  return cols;
 }
 
 /** Return all unique row['COLUMN'] references found in a text block. */
@@ -702,6 +714,15 @@ function extractSubMaps(body, methods) {
     if (!cols.length) {
       const vm = subExpr.match(/^(\w+)\b/);
       if (vm && varCols[vm[1]]) cols = [...varCols[vm[1]]];
+    }
+
+    // If variable came from inventory_details, resolve the Entry method to actual column name
+    // e.g. entry&.price → Entry#price reads raw['price'] → show 'price' not 'inventory_details'
+    if (cols.length === 1 && cols[0] === 'inventory_details' && _inventoryEntryMap) {
+      const methodM = subExpr.match(/^\w+&?\.(\w+[?!]?)/);
+      if (methodM && _inventoryEntryMap[methodM[1]]) {
+        cols = [..._inventoryEntryMap[methodM[1]]];
+      }
     }
 
     if (cols.length || subExpr === 'nil')
@@ -1135,6 +1156,31 @@ tokenReset.addEventListener('click', () => {
   tokenErr.style.display = 'none';
   tokenGate.classList.remove('hidden');
 });
+
+// ── InventoryDetails::Entry method map ───────────────────────────────────
+// Maps Entry method names (price, sale_price, stores) to the raw feed columns
+// they read, so "entry&.price" resolves to ['price'] instead of ['inventory_details'].
+let _inventoryEntryMap = null;
+
+async function fetchInventoryEntryMap() {
+  if (_inventoryEntryMap !== null) return _inventoryEntryMap;
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${REPO}/contents/app/lib/collectors/process_chunks/shared/inventory_details.rb?ref=${REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const methods = extractMethods(src);
+    const map = {};
+    for (const [name, body] of Object.entries(methods)) {
+      const cols = rawRefs(body);
+      if (cols.length) map[name] = cols;
+    }
+    _inventoryEntryMap = map;
+  } catch (_) {
+    _inventoryEntryMap = {}; // degrade gracefully if fetch fails
+  }
+  return _inventoryEntryMap;
+}
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 if (TOKEN) {
