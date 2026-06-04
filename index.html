@@ -147,6 +147,10 @@
     .sec-hdr   { font-size: 15px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #d0d7de; }
     .sec-note  { font-size: 13px; color: #57606a; font-style: italic; margin-bottom: 12px; line-height: 1.6; }
     .sec-desc  { font-size: 12px; font-weight: 400; color: #8b949e; margin-left: 8px; }
+    /* ── Store assignment section ─────────────────────────────────────────── */
+    .store-desc { font-size: 13px; color: #24292f; line-height: 1.7; margin-bottom: 10px; }
+    .store-desc code { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 3px; padding: 1px 5px; font-size: 12px; }
+
     .sec-hdr.collapsible { cursor: pointer; user-select: none; }
     .sec-hdr.collapsible:hover { color: #0969da; }
     .chevron { font-size: 9px; margin-right: 6px; display: inline-block; transition: transform .15s; color: #8b949e; }
@@ -383,7 +387,7 @@ async function openFile(row) {
       `https://api.github.com/repos/${REPO}/contents/${row.dataset.path}?ref=${REF}`
     );
     const src = atob(data.content.replace(/\n/g, ''));
-    await fetchInventoryEntryMap(); // ensure Entry method map is ready before analysis
+    await Promise.all([fetchInventoryEntryMap(), fetchPivotDefaults()]); // ensure both maps are ready
     const res = analyzeCollector(src);
 
     // Fetch parent if: no mappings at all, OR base_mapping merges from super
@@ -513,6 +517,9 @@ function analyzeCollector(src) {
   if (em) out.encodingOverride = em[1];
 
   const methods = extractMethods(src);
+
+  // Store assignment (Local feeds)
+  out.storeAssignment = detectStoreAssignment(methods, src);
 
   // Detect base_model (Product / Offer / MetaItem etc.)
   if (methods.base_model) {
@@ -750,6 +757,60 @@ function extractSubMapsDeduped(body, methods) {
   return map.size ? [...map.values()] : null;
 }
 
+// ── Store assignment detection ────────────────────────────────────────────
+
+function detectStoreAssignment(methods, src) {
+  const expandBody = methods.expand_item || '';
+  const offerBody  = methods.base_offer  || '';
+  const combined   = expandBody + offerBody;
+
+  // If no expand_item and no store_code in base_offer, nothing to show
+  if (!expandBody && !/store_code/.test(offerBody)) return null;
+
+  // Pattern 1: Delegates entirely to InventoryDetails#expand_item — store codes from feed
+  if (/inventory/.test(expandBody) && /\.expand_item\(/.test(expandBody)) {
+    const storesField = (_inventoryEntryMap?.stores?.[0]) || 'stores';
+    const rawColumn   = (_pivotDefaults?.INV_STORE_COL)   || 'store_code';
+    return { type: 'feed', storesField, rawColumn };
+  }
+
+  // Pattern 2: Context-driven (Leon's) — store groups from platform DB, row column picks region
+  const ctxStores = [...new Set(
+    (expandBody.match(/context\.(\w+)/g) || [])
+      .filter(s => /store/i.test(s))
+      .map(s => s.replace('context.', ''))
+  )];
+  if (ctxStores.length) {
+    return { type: 'context', storeGroups: ctxStores, regionColumns: rowRefs(expandBody) };
+  }
+
+  // Pattern 3: Hardcoded hash constant iterated with store_code (Pet Valu pattern)
+  const iterM = expandBody.match(/(\w+)\.each\s+do\s+\|\s*\w+\s*,\s*store_code\s*\|/);
+  if (iterM) {
+    const cName = iterM[1];
+    const constBody = src.match(new RegExp(cName + '\\s*=\\s*\\{([\\s\\S]+?)\\}'));
+    if (constBody) {
+      const entries = [], re = /['"]([^'"]+)['"]\s*=>\s*['"]([^'"]+)['"]/g;
+      let m;
+      while ((m = re.exec(constBody[1])) !== null) entries.push({ key: m[1], value: m[2] });
+      if (entries.length) return { type: 'hardcoded_map', constantName: cName, entries };
+    }
+  }
+
+  // Pattern 4: Single hardcoded constant assigned to store_code (Pharmaprix pattern)
+  const assignM = combined.match(/store_code\s*=\s*([A-Z_]+)/);
+  if (assignM) {
+    const cName = assignM[1];
+    const valM = src.match(new RegExp(cName + "\\s*=\\s*['\"]([^'\"]+)['\"]"));
+    if (valM) return { type: 'hardcoded_single', constantName: cName, storeCode: valM[1] };
+  }
+
+  // Fallback: only show if store_code is actually referenced (not just API enrichment)
+  return (expandBody && /store_code/.test(expandBody + offerBody))
+    ? { type: 'code', body: expandBody }
+    : null;
+}
+
 // ── Parent class resolution ───────────────────────────────────────────────
 
 /** CamelCase → snake_case */
@@ -832,6 +893,9 @@ function renderAnalysis(res, filename, filepath) {
     if (res.mapping && !res.mappingCallsSuper) html += renderMappingSection(res.mapping);
     if (res.mapping && res.mappingCallsSuper)  html += renderMappingOverrides(res.mapping);
   }
+
+  // Store assignment section (Local feeds)
+  if (res.storeAssignment) html += renderStoreAssignmentSection(res.storeAssignment);
 
   // Inherited mapping from parent class (pattern 3, fetched async)
   if (res.inherited) html += renderInheritedSection(res.inherited, res.mapping);
@@ -1070,6 +1134,37 @@ function renderXform(entry) {
   return html + `</div>`;
 }
 
+function renderStoreAssignmentSection(a) {
+  let body = '';
+  switch (a.type) {
+    case 'feed':
+      body = `<p class="store-desc">Store codes come from the raw feed column <strong><code>${H(a.rawColumn)}</code></strong>. The chunker groups one row per store into a single combined record, packing store codes into the <code>${H(a.storesField)}</code> array within each <code>inventory_details</code> entry.</p>`;
+      break;
+    case 'context':
+      body = `<p class="store-desc">Store codes come from the <strong>platform store database</strong>, resolved at runtime via context.</p>
+        <p class="store-desc">The feed column <strong>${a.regionColumns.map(H).map(c => `<code>${c}</code>`).join(', ')}</strong> selects the store group: ${a.storeGroups.map(g => `<code>${H(g)}</code>`).join(' / ')}.</p>`;
+      break;
+    case 'hardcoded_map': {
+      const rows = a.entries.map(e => `<tr><td>${H(e.key)}</td><td><span class="tag">${H(e.value)}</span></td></tr>`).join('');
+      body = `<p class="store-desc">Store codes are <strong>hardcoded</strong> in the script (<code>${H(a.constantName)}</code>):</p>
+        <table class="mtable" style="margin-top:8px;width:auto">
+          <thead><tr><th>Region</th><th>Store code</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+      break;
+    }
+    case 'hardcoded_single':
+      body = `<p class="store-desc">A single <strong>hardcoded store code</strong> is assigned to all offers: <code>${H(a.constantName)} = "${H(a.storeCode)}"</code>.</p>`;
+      break;
+    case 'code':
+      body = `<p class="store-desc">Store assignment logic (<code>expand_item</code>):</p>
+        <pre class="code-block open"><code class="language-ruby">${H(a.body)}</code></pre>`;
+      if (window.Prism) setTimeout(() => Prism.highlightAll(), 0);
+      break;
+  }
+  return `<div class="section"><div class="sec-hdr">🏪  Store Assignment <span class="sec-desc">How offers are assigned to store locations</span></div>${body}</div>`;
+}
+
 function renderInheritedSection(inherited, localOverrides) {
   const fromLabel = inherited.className || 'parent class';
   // Fields overridden locally via super.merge — exclude them from the inherited table
@@ -1155,6 +1250,29 @@ tokenReset.addEventListener('click', () => {
   tokenErr.style.display = 'none';
   tokenGate.classList.remove('hidden');
 });
+
+// ── pivot_feed.sh column defaults ────────────────────────────────────────
+// Parses the inventory column names (INV_STORE_COL, INV_PRICE_COL, etc.) from
+// scripts/pivot_feed.sh so we can show raw feed column names instead of JSON key names.
+let _pivotDefaults = null;
+
+async function fetchPivotDefaults() {
+  if (_pivotDefaults !== null) return _pivotDefaults;
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${REPO}/contents/scripts/pivot_feed.sh?ref=${REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const map = {};
+    const re = /export\s+(INV_\w+COL)\s*=\s*"([^"]+)"/g;
+    let m;
+    while ((m = re.exec(src)) !== null) map[m[1]] = m[2];
+    _pivotDefaults = map;
+  } catch (_) {
+    _pivotDefaults = {}; // degrade gracefully
+  }
+  return _pivotDefaults;
+}
 
 // ── InventoryDetails::Entry method map ───────────────────────────────────
 // Maps Entry method names (price, sale_price, stores) to the raw feed columns
