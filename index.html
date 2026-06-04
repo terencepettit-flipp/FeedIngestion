@@ -162,7 +162,7 @@
       text-transform: uppercase; letter-spacing: .5px;
       color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de;
     }
-    .mtable td             { padding: 10px 14px; vertical-align: top; border-bottom: 1px solid #f3f4f6; }
+    .mtable td             { padding: 10px 14px; vertical-align: top; border-bottom: 1px solid #d0d7de; }
     .mtable tbody tr:last-child td { border-bottom: none; }
     .mtable tbody tr:hover td      { background: #fafafa; }
     .mtable tr.dim td      { opacity: .42; }
@@ -196,9 +196,9 @@
     .xnote { font-family: ui-monospace, monospace; font-size: 11px; color: #57606a; }
 
     /* ── Builder-grouped rows ─────────────────────────────────────────────── */
-    tr.builder-hdr td   { background: #fdf8ff; border-bottom: none !important; }
-    tr.sub-row td       { background: #faf5ff; padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid #ede9f6; }
-    tr.sub-row:last-child td { border-bottom: 1px solid #f3f4f6; }
+    tr.builder-hdr td   { border-bottom: none !important; }
+    tr.sub-row td       { padding-top: 5px; padding-bottom: 5px; border-bottom: none; }
+    tr.sub-row.group-end td { border-bottom: 1px solid #d0d7de; }
     .sub-field-cell     { padding-left: 22px !important; }
     .tree-conn          { color: #c084fc; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 5px; user-select: none; }
     .sub-fname          { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #4080c8; }
@@ -985,7 +985,7 @@ function renderEntryRows(entry) {
 
   entry.subMaps.forEach((s, i) => {
     const last = i === entry.subMaps.length - 1;
-    html += `<tr class="sub-row">
+    html += `<tr class="sub-row${last ? ' group-end' : ''}">
       <td class="sub-field-cell">
         <span class="tree-conn">${last ? '└' : '├'}</span><span class="sub-fname">${H(s.subField)}</span>
       </td>
