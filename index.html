@@ -186,11 +186,13 @@
     .x-computed { background: #f1f5f9; color: #64748b; }
     .xnote { font-family: ui-monospace, monospace; font-size: 11px; color: #57606a; }
 
-    /* ── Sub-mappings (inside builder rows) ───────────────────────────────── */
-    .submaps  { border-left: 2px solid #d8b4fe; padding: 4px 0 4px 10px; display: flex; flex-direction: column; gap: 3px; }
-    .submap   { display: flex; align-items: baseline; gap: 5px; font-size: 12px; }
-    .subkey   { font-family: ui-monospace, monospace; font-size: 11px; color: #7e22ce; font-weight: 600; flex-shrink: 0; }
-    .subarrow { color: #8b949e; font-size: 10px; flex-shrink: 0; }
+    /* ── Builder-grouped rows ─────────────────────────────────────────────── */
+    tr.builder-hdr td   { background: #fdf8ff; border-bottom: none !important; }
+    tr.sub-row td       { background: #faf5ff; padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid #ede9f6; }
+    tr.sub-row:last-child td { border-bottom: 1px solid #f3f4f6; }
+    .sub-field-cell     { padding-left: 22px !important; }
+    .tree-conn          { color: #c084fc; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 5px; user-select: none; }
+    .sub-fname          { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #7e22ce; }
 
     /* ── Inherited section ────────────────────────────────────────────────── */
     .inherited-section { margin-bottom: 36px; }
@@ -848,14 +850,8 @@ function renderProductMethodsSection(productMethods, baseMapping, baseModel) {
     });
   }
 
-  // base_* method entries — rendered exactly like builder entries
-  productMethods.forEach(entry => {
-    html += `<tr>
-      <td><span class="fname-code">${H(entry.field)}</span></td>
-      <td>${renderCols(entry.feedCols)}</td>
-      <td>${renderXform(entry)}</td>
-    </tr>`;
-  });
+  // base_* method entries — with sub-field row expansion for builders
+  productMethods.forEach(entry => { html += renderEntryRows(entry); });
 
   return html + `</tbody></table></div>`;
 }
@@ -944,16 +940,47 @@ function renderSection(title, data) {
     </thead>
     <tbody>`;
 
-  data.forEach(entry => {
-    const dim = entry.type === 'constant' || entry.type === 'computed';
-    html += `<tr${dim ? ' class="dim"' : ''}>
+  data.forEach(entry => { html += renderEntryRows(entry); });
+
+  return html + `</tbody></table></div>`;
+}
+
+/**
+ * Renders one or more <tr> elements for a field entry.
+ * Builder entries with sub-maps get a header row + indented child rows.
+ * Everything else gets a single row as before.
+ */
+function renderEntryRows(entry) {
+  const dim = entry.type === 'constant' || entry.type === 'computed';
+
+  // Single row for non-builders or builders with no sub-field breakdown
+  if (entry.type !== 'builder' || !entry.subMaps || !entry.subMaps.length) {
+    return `<tr${dim ? ' class="dim"' : ''}>
       <td><span class="fname-code">${H(entry.field)}</span></td>
       <td>${renderCols(entry.feedCols)}</td>
       <td>${renderXform(entry)}</td>
     </tr>`;
+  }
+
+  // Builder with sub-maps: header row + one row per sub-field
+  let html = `<tr class="builder-hdr">
+    <td><span class="fname-code">${H(entry.field)}</span></td>
+    <td></td>
+    <td>${renderXform(entry)}</td>
+  </tr>`;
+
+  entry.subMaps.forEach((s, i) => {
+    const last = i === entry.subMaps.length - 1;
+    html += `<tr class="sub-row">
+      <td class="sub-field-cell">
+        <span class="tree-conn">${last ? '└' : '├'}</span><span class="sub-fname">${H(s.subField)}</span>
+      </td>
+      <td>${renderCols(s.cols)}</td>
+      <td></td>
+    </tr>`;
   });
 
-  return html + `</tbody></table></div>`;
+  return html;
 }
 
 function renderCols(cols) {
@@ -976,20 +1003,6 @@ function renderXform(entry) {
 
     case 'builder':
       html += `<span class="xbadge x-builder">${H(entry.builderMethod)}</span>`;
-      if (entry.subMaps) {
-        html += `<div class="submaps">`;
-        entry.subMaps.forEach(s => {
-          const colsHtml = s.cols.length
-            ? s.cols.map(c => `<span class="tag">${H(c)}</span>`).join('')
-            : `<span class="tag empty">nil</span>`;
-          html += `<div class="submap">
-            <span class="subkey">${H(s.subField)}</span>
-            <span class="subarrow">←</span>
-            <span class="tags">${colsHtml}</span>
-          </div>`;
-        });
-        html += `</div>`;
-      }
       if (entry.builderBody)
         html += `<button class="snip-btn">▼ view code</button><pre class="code-block">${H(entry.builderBody)}</pre>`;
       break;
