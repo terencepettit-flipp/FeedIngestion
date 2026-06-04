@@ -144,6 +144,12 @@
     .sec-hdr   { font-size: 15px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #d0d7de; }
     .sec-note  { font-size: 13px; color: #57606a; font-style: italic; margin-bottom: 12px; line-height: 1.6; }
     .sec-desc  { font-size: 12px; font-weight: 400; color: #8b949e; margin-left: 8px; }
+    .sec-hdr.collapsible { cursor: pointer; user-select: none; }
+    .sec-hdr.collapsible:hover { color: #0969da; }
+    .chevron { font-size: 9px; margin-right: 6px; display: inline-block; transition: transform .15s; color: #8b949e; }
+    .collapsible-section .collapsible-body { display: none; }
+    .collapsible-section.open .collapsible-body { display: block; }
+    .collapsible-section.open .chevron { transform: rotate(90deg); }
     .sec-note code { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 3px; padding: 1px 5px; font-style: normal; font-size: 12px; }
 
     /* ── Mapping table ────────────────────────────────────────────────────── */
@@ -875,8 +881,12 @@ function renderMappingOverrides(mappings) {
 }
 
 function renderHooksSection(hooks) {
-  let html = `<div class="section">
-    <div class="sec-hdr">⚙️  Custom Logic <span class="sec-desc">Hook methods that override specific parsing behaviours</span></div>
+  let html = `<div class="section collapsible-section">
+    <div class="sec-hdr collapsible" onclick="this.parentElement.classList.toggle('open')">
+      <span class="chevron">▶</span>⚙️  Custom Logic
+      <span class="sec-desc">Hook methods that override specific parsing behaviours</span>
+    </div>
+    <div class="collapsible-body">
     <table class="mtable">
       <thead><tr>
         <th style="width:190px">Hook</th>
@@ -894,7 +904,7 @@ function renderHooksSection(hooks) {
       </div></td>
     </tr>`;
   });
-  return html + `</tbody></table></div>`;
+  return html + `</tbody></table></div></div>`;
 }
 
 const SECTION_DESCS = {
