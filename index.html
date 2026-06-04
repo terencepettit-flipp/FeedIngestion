@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>process_chunks — Field Mapper</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -138,6 +139,8 @@
     .b-parent      { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
     .b-encoding    { background: #fef9c3; color: #713f12; border-color: #fde68a; }
     .b-api         { background: #fdf4ff; color: #6b21a8; border-color: #e9d5ff; }
+    .b-v2          { background: #e0f2fe; color: #0369a1; border-color: #bae6fd; }
+    .b-v1          { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
 
     /* ── Section ──────────────────────────────────────────────────────────── */
     .section   { margin-bottom: 36px; }
@@ -229,13 +232,14 @@
     }
     .snip-btn:hover { color: #6b21a8; }
     .code-block {
-      display: none; background: #161b22; color: #c9d1d9;
-      border-radius: 6px; padding: 12px 14px;
+      display: none; background: #161b22 !important; color: #c9d1d9;
+      border-radius: 6px; padding: 12px 14px !important;
       font-family: ui-monospace, 'SF Mono', Consolas, monospace;
       font-size: 11px; line-height: 1.65; overflow-x: auto; white-space: pre;
-      margin-top: 4px; max-height: 300px; overflow-y: auto;
+      margin-top: 4px !important; max-height: 300px; overflow-y: auto;
     }
     .code-block.open { display: block; }
+    .code-block code[class*="language-"] { background: none !important; padding: 0; font-size: inherit; }
   </style>
 </head>
 
@@ -391,6 +395,9 @@ async function openFile(row) {
     // Show dim toggle only if this file actually has non-feed (dim) rows
     const dimToggleEl = document.querySelector('.dim-toggle');
     dimToggleEl.classList.toggle('visible', main.querySelectorAll('.mtable tr.dim').length > 0);
+
+    // Syntax-highlight all code blocks
+    if (window.Prism) Prism.highlightAllUnder(main);
 
     // Wire collapsible snippet buttons
     main.querySelectorAll('.snip-btn').forEach(btn =>
@@ -783,10 +790,14 @@ function renderAnalysis(res, filename, filepath) {
   let html = `<div class="a-hdr">
     <h2>${H(title)}${ghUrl ? `<span class="file-ref">(<a href="${ghUrl}" target="_blank" rel="noopener">${H(filename)}</a>)</span>` : ''}</h2>
     <div class="badge-row">`;
+  const isV2 = res.baseModel === 'Offer' || res.baseModel === 'Product' || !!res.productMethods;
   if (res.merchantIds.length)  html += `<span class="badge b-merchant">🏪 Merchant #${res.merchantIds.join(', ')}</span>`;
   if (res.parentClass)         html += `<span class="badge b-parent">extends ${H(res.parentClass)}</span>`;
   if (res.encodingOverride)    html += `<span class="badge b-encoding">encoding: ${H(res.encodingOverride)}</span>`;
   if (res.hasExpandItem)       html += `<span class="badge b-api">⚡ API enrichment</span>`;
+  html += isV2
+    ? `<span class="badge b-v2">V2 model</span>`
+    : `<span class="badge b-v1">V1 model</span>`;
   html += `</div></div>`;
 
   // Pattern 1 — explicit builders
@@ -904,7 +915,7 @@ function renderHooksSection(hooks) {
       <td>${renderCols(h.feedCols)}</td>
       <td><div class="xform">
         <span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span>
-        <pre class="code-block">${H(h.body)}</pre>
+        <pre class="code-block"><code class="language-ruby">${H(h.body)}</code></pre>
       </div></td>
     </tr>`;
   });
@@ -1018,7 +1029,7 @@ function renderXform(entry) {
     case 'builder':
       html += `<div class="builder-header"><span class="xbadge x-builder">${H(entry.builderMethod)}</span>`;
       if (entry.builderBody)
-        html += `<span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span></div><pre class="code-block">${H(entry.builderBody)}</pre>`;
+        html += `<span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span></div><pre class="code-block"><code class="language-ruby">${H(entry.builderBody)}</code></pre>`;
       else
         html += `</div>`;
       break;
@@ -1167,5 +1178,7 @@ dimToggle.addEventListener('change', () =>
   });
 })();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-ruby.min.js"></script>
 </body>
 </html>
