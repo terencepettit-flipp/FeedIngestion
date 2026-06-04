@@ -185,6 +185,9 @@
     /* ── Cell: transformation ─────────────────────────────────────────────── */
     .xform  { display: flex; flex-direction: column; gap: 5px; }
     .xbadge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; width: fit-content; }
+    .builder-header { display: flex; align-items: center; gap: 8px; }
+    .view-code-inline { font-size: 11px; color: #8b949e; white-space: nowrap; }
+    .view-code-inline .snip-btn { display: inline; }
     .x-direct   { background: #dcfce7; color: #15803d; }
     .x-inline   { background: #eff6ff; color: #1d4ed8; }
     .x-builder  { background: #fdf4ff; color: #7e22ce; }
@@ -198,7 +201,7 @@
     tr.sub-row:last-child td { border-bottom: 1px solid #f3f4f6; }
     .sub-field-cell     { padding-left: 22px !important; }
     .tree-conn          { color: #c084fc; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 5px; user-select: none; }
-    .sub-fname          { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #7e22ce; }
+    .sub-fname          { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 600; color: #4080c8; }
 
     /* ── Inherited section ────────────────────────────────────────────────── */
     .inherited-section { margin-bottom: 36px; }
@@ -392,7 +395,8 @@ async function openFile(row) {
     // Wire collapsible snippet buttons
     main.querySelectorAll('.snip-btn').forEach(btn =>
       btn.addEventListener('click', () => {
-        const isOpen = btn.nextElementSibling.classList.toggle('open');
+        const block = btn.closest('.xform').querySelector('.code-block');
+        const isOpen = block.classList.toggle('open');
         btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
       })
     );
@@ -899,7 +903,7 @@ function renderHooksSection(hooks) {
       <td><span class="fname-code">${H(h.name)}</span></td>
       <td>${renderCols(h.feedCols)}</td>
       <td><div class="xform">
-        <button class="snip-btn">▼ view code</button>
+        <span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span>
         <pre class="code-block">${H(h.body)}</pre>
       </div></td>
     </tr>`;
@@ -1012,9 +1016,11 @@ function renderXform(entry) {
       break;
 
     case 'builder':
-      html += `<span class="xbadge x-builder">${H(entry.builderMethod)}</span>`;
+      html += `<div class="builder-header"><span class="xbadge x-builder">${H(entry.builderMethod)}</span>`;
       if (entry.builderBody)
-        html += `<button class="snip-btn">▼ view code</button><pre class="code-block">${H(entry.builderBody)}</pre>`;
+        html += `<span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span></div><pre class="code-block">${H(entry.builderBody)}</pre>`;
+      else
+        html += `</div>`;
       break;
 
     case 'constant':
