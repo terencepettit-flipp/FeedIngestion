@@ -466,13 +466,19 @@ function rawRefs(text) {
   return cols;
 }
 
-/** Return all unique row['COLUMN'] references found in a text block. */
+/** Return all unique row column references found in a text block.
+ *  Handles both CSV/TSV bracket notation (row['X']) and
+ *  XML XPath notation (row.at_xpath('./g:x')). */
 function rowRefs(text) {
   const cols = [];
-  const re   = /row\[['"]([^'"]+)['"]\]/g;
+  const add  = v => { if (!cols.includes(v)) cols.push(v); };
+  // row['X'] or row["X"] — CSV/TSV feeds
+  const re1 = /row\[['"]([^'"]+)['"]\]/g;
   let m;
-  while ((m = re.exec(text)) !== null)
-    if (!cols.includes(m[1])) cols.push(m[1]);
+  while ((m = re1.exec(text)) !== null) add(m[1]);
+  // row.at_xpath('./g:x') — XML feeds
+  const re2 = /\brow\.at_xpath\(['"]([^'"]+)['"]\)/g;
+  while ((m = re2.exec(text)) !== null) add(m[1]);
   return cols;
 }
 
@@ -1153,8 +1159,12 @@ function renderStoreAssignmentSection(a) {
       body = `<p class="store-desc">Store codes come from the raw feed column <strong><code>${H(a.rawColumn)}</code></strong>. The chunker groups one row per store into a single combined record, packing store codes into the <code>${H(a.storesField)}</code> array within each <code>inventory_details</code> entry.</p>`;
       break;
     case 'context':
-      body = `<p class="store-desc">Store codes come from the <strong>platform store database</strong>, resolved at runtime via context.</p>
-        <p class="store-desc">The feed column <strong>${a.regionColumns.map(H).map(c => `<code>${c}</code>`).join(', ')}</strong> selects the store group: ${a.storeGroups.map(g => `<code>${H(g)}</code>`).join(' / ')}.</p>`;
+      body = `<p class="store-desc">Store codes come from the <strong>platform store database</strong>, resolved at runtime via context.</p>`;
+      if (a.regionColumns.length) {
+        body += `<p class="store-desc">The feed column <strong>${a.regionColumns.map(c => `<code>${H(c)}</code>`).join(', ')}</strong> selects the store group: ${a.storeGroups.map(g => `<code>${H(g)}</code>`).join(' / ')}.</p>`;
+      } else {
+        body += `<p class="store-desc">All stores in <code>${a.storeGroups.map(H).join(' / ')}</code> are assigned — no per-row filtering.</p>`;
+      }
       break;
     case 'hardcoded_map': {
       const rows = a.entries.map(e => `<tr><td>${H(e.key)}</td><td><span class="tag">${H(e.value)}</span></td></tr>`).join('');
