@@ -360,7 +360,7 @@ async function toggleFolder(row) {
       .sort((a, b) => a.name.localeCompare(b.name));
 
     children.innerHTML = _folderCache[folder.path].map(f =>
-      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}">
+      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}" data-folder-idx="${idx}">
         <span class="ficon">💎</span>
         <span class="fname">${friendlyName(f.name)}</span>
         <span class="fsize">${fmtSize(f.size)}</span>
@@ -378,6 +378,12 @@ async function toggleFolder(row) {
 async function openFile(row) {
   document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
   row.classList.add('on');
+
+  // Update URL hash for deep linking (replaceState keeps browser history clean)
+  const folderIdx = row.dataset.folderIdx;
+  if (folderIdx !== undefined && FOLDERS[folderIdx]) {
+    history.replaceState(null, '', '#' + encodeURIComponent(FOLDERS[folderIdx].label) + '/' + encodeURIComponent(row.dataset.name));
+  }
 
   const main = document.getElementById('main');
   main.innerHTML = '<div class="notice">Fetching…</div>';
@@ -1305,10 +1311,44 @@ async function fetchInventoryEntryMap() {
   return _inventoryEntryMap;
 }
 
+// ── Deep link support ─────────────────────────────────────────────────────
+function applyDeepLink() {
+  const hash = decodeURIComponent(window.location.hash.slice(1));
+  if (!hash) return;
+  const slash = hash.indexOf('/');
+  if (slash === -1) return;
+  const folderLabel = hash.substring(0, slash);
+  const filename    = hash.substring(slash + 1);
+  const folderIdx   = FOLDERS.findIndex(f => f.label === folderLabel);
+  if (folderIdx === -1) return;
+
+  // Phase 1: wait for folder rows to render (loadList is async)
+  let folderAttempts = 0;
+  const waitForFolder = () => {
+    const folderRow = document.querySelector(`.folder-row[data-idx="${folderIdx}"]`);
+    if (!folderRow) {
+      if (++folderAttempts < 30) setTimeout(waitForFolder, 200);
+      return;
+    }
+    if (!folderRow.classList.contains('open')) folderRow.click();
+
+    // Phase 2: wait for file items to render (folder fetch is async)
+    let fileAttempts = 0;
+    const waitForFile = () => {
+      const el = document.querySelector(`.file-item.rb[data-folder-idx="${folderIdx}"][data-name="${filename}"]`);
+      if (el) { el.click(); return; }
+      if (++fileAttempts < 30) setTimeout(waitForFile, 200);
+    };
+    setTimeout(waitForFile, 200);
+  };
+  waitForFolder();
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 if (TOKEN) {
   tokenGate.classList.add('hidden');
-  loadList();
+  loadList();      // synchronous — folder rows are in the DOM immediately after
+  applyDeepLink(); // safe to run straight away
 }
 
 // ── Hide non-feed fields toggle ───────────────────────────────────────────
