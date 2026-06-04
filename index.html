@@ -390,8 +390,9 @@ async function openFile(row) {
     await Promise.all([fetchInventoryEntryMap(), fetchPivotDefaults()]); // ensure both maps are ready
     const res = analyzeCollector(src);
 
-    // Fetch parent if: no mappings at all, OR base_mapping merges from super
-    if ((!res.product && !res.offer && !res.mapping || res.mappingCallsSuper) && res.parentClassFull) {
+    // Fetch parent if: no mappings at all, base_mapping merges from super, or base_product/offer calls super
+    res.hasSuperDelegation = res.product?.type === 'super' || res.offer?.type === 'super';
+    if ((!res.product && !res.offer && !res.mapping || res.mappingCallsSuper || res.hasSuperDelegation) && res.parentClassFull) {
       res.inherited = await fetchParentAnalysis(res.parentClassFull);
     }
 
@@ -897,8 +898,13 @@ function renderAnalysis(res, filename, filepath) {
   // Store assignment section (Local feeds)
   if (res.storeAssignment) html += renderStoreAssignmentSection(res.storeAssignment);
 
-  // Inherited mapping from parent class (pattern 3, fetched async)
-  if (res.inherited) html += renderInheritedSection(res.inherited, res.mapping);
+  // For super-delegating files, show the parent's full field mappings
+  if (res.inherited && res.hasSuperDelegation) {
+    if (res.inherited.product) html += renderSection('📦  Product Fields (inherited from ' + (res.inherited.className || 'parent') + ')', res.inherited.product);
+    if (res.inherited.offer)   html += renderSection('🏷️  Offer Fields (inherited from ' + (res.inherited.className || 'parent') + ')', res.inherited.offer);
+  } else if (res.inherited) {
+    html += renderInheritedSection(res.inherited, res.mapping);
+  }
 
   // Hooks (patterns 2 & 3)
   if (res.hooks) html += renderHooksSection(res.hooks);
