@@ -716,10 +716,13 @@ function extractSubMaps(body, methods) {
   const subs = [];
   for (const line of lines) {
     const t  = line.trimStart();
+    // Primary pattern:   key: value   (symbol key in hash literal)
     const kv = t.match(/^(\w+):\s+(.+?)(?:,\s*)?$/);
-    if (!kv) continue;
-    const subField = kv[1];
-    const subExpr  = kv[2].trim().replace(/,\s*$/, '');
+    // Secondary pattern: hash[:key] = value   (bracket-style hash mutation)
+    const bv = !kv ? t.match(/^\w+\[\s*:(\w+)\s*\]\s*=\s+(.+)/) : null;
+    if (!kv && !bv) continue;
+    const subField = kv ? kv[1] : bv[1];
+    const subExpr  = (kv ? kv[2] : bv[2]).trim().replace(/,\s*$/, '');
     let   cols     = rowRefs(subExpr);
 
     // Follow a known method call
