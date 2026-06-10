@@ -818,7 +818,7 @@ function detectDvmTags(src, methods) {
       enrichBody.includes(`"${value}"`) ||
       (enrichBody.length > 0 && tagLine.match(/\b([A-Z_]+)\b/)?.slice(1).some(c => enrichBody.includes(c)));
     seen.add(value);
-    tags.push({ value, conditional, conditionCols, apiEnrichment });
+    tags.push({ value, conditional, conditionCols, apiEnrichment, body, methodName });
   };
 
   // Scan method bodies for literal tag strings
@@ -1246,12 +1246,13 @@ function renderXform(entry) {
 
 function renderDvmSection(tags) {
   let html = `<div class="section">
-    <div class="sec-hdr">🏷️  DVM Tags <span class="sec-desc">Tags assigned to offers for the Dynamic Value Module</span></div>
+    <div class="sec-hdr">🏷️  DVM Tags <span class="sec-desc">Tags assigned to offers for Digital Visual Merchandising</span></div>
     <table class="mtable">
       <thead><tr>
         <th style="width:220px">Tag</th>
         <th style="width:140px">Assignment</th>
-        <th>Condition</th>
+        <th style="width:200px">Condition</th>
+        <th>Code</th>
       </tr></thead>
       <tbody>`;
   tags.forEach(t => {
@@ -1264,10 +1265,14 @@ function renderDvmSection(tags) {
     const enrichNote = t.apiEnrichment
       ? `<div style="margin-top:4px;font-size:11px;color:#57606a">⚡ can be overridden by API enrichment</div>`
       : '';
+    const codeCell = t.body
+      ? `<div class="xform"><span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span><pre class="code-block"><code class="language-ruby">${H(t.body)}</code></pre></div>`
+      : '';
     html += `<tr>
       <td><span class="tag" style="font-size:12px">${H(t.value)}</span></td>
       <td><div class="xform">${assignment}${enrichNote}</div></td>
       <td>${condition}</td>
+      <td>${codeCell}</td>
     </tr>`;
   });
   return html + `</tbody></table></div>`;
