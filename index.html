@@ -141,6 +141,8 @@
     .b-api         { background: #fdf4ff; color: #6b21a8; border-color: #e9d5ff; }
     .b-v2          { background: #e0f2fe; color: #0369a1; border-color: #bae6fd; }
     .b-v1          { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
+    .b-dvm         { background: #fef3c7; color: #b45309; border-color: #fcd34d; }
+    .b-dvm-cond    { background: #fef3c7; color: #b45309; border-color: #fcd34d; border-style: dashed; }
 
     /* ── Section ──────────────────────────────────────────────────────────── */
     .section   { margin-bottom: 36px; }
@@ -544,6 +546,9 @@ function analyzeCollector(src) {
 
   const methods = extractMethods(src);
 
+  // DVM tag detection
+  out.dvmTags = detectDvmTags(src, methods);
+
   // Store assignment (Local feeds)
   out.storeAssignment = detectStoreAssignment(methods, src);
 
@@ -786,6 +791,68 @@ function extractSubMapsDeduped(body, methods) {
   return map.size ? [...map.values()] : null;
 }
 
+// ── DVM tag detection ─────────────────────────────────────────────────────
+
+function detectDvmTags(src, methods) {
+  const tags = [];
+  const seen = new Set();
+
+  // Helper: process one found tag
+  const processTag = (value, body, methodName) => {
+    if (seen.has(value)) return;
+    // Find the line containing the tag value or its constant name
+    const tagLine = body.split('\n').find(l => l.includes(`'${value}'`) || l.includes(`"${value}"`) || l.includes(methodName)) || '';
+    const conditional = /\?|^\s*if\b|unless\b/.test(tagLine);
+    let conditionCols = [];
+    if (conditional) {
+      // Follow include_in_dvm? or similar condition helper
+      const condM = tagLine.match(/([\w?!]+)\s*\(row\)/);
+      if (condM && methods[condM[1]]) {
+        conditionCols = rowRefs(methods[condM[1]]);
+      }
+      if (!conditionCols.length) conditionCols = rowRefsDeep(body, methods);
+    }
+    // API enrichment override: another method also references the tag or its constant
+    const enrichBody = methods.enrich_offer || methods.enrich_item || '';
+    const apiEnrichment = enrichBody.includes(`'${value}'`) ||
+      enrichBody.includes(`"${value}"`) ||
+      (enrichBody.length > 0 && tagLine.match(/\b([A-Z_]+)\b/)?.slice(1).some(c => enrichBody.includes(c)));
+    seen.add(value);
+    tags.push({ value, conditional, conditionCols, apiEnrichment });
+  };
+
+  // Scan method bodies for literal tag strings
+  const tagRe = /['"]((dvm:|datafeed:)[^'"]+)['"]/g;
+  let m;
+  while ((m = tagRe.exec(src)) !== null) {
+    const value = m[1];
+    if (seen.has(value)) continue;
+    // Find the method body containing this string literal
+    for (const [name, body] of Object.entries(methods)) {
+      if (body.includes(`'${value}'`) || body.includes(`"${value}"`)) {
+        processTag(value, body, name);
+        break;
+      }
+    }
+  }
+
+  // Handle constant pattern: DVM_TAG = 'datafeed:...'
+  const constM = src.match(/([A-Z_]+)\s*=\s*['"]((dvm:|datafeed:)[^'"]+)['"]/);
+  if (constM) {
+    const [, constName, value] = constM;
+    if (!seen.has(value)) {
+      for (const [, body] of Object.entries(methods)) {
+        if (body.includes(constName)) {
+          processTag(value, body, constName);
+          break;
+        }
+      }
+    }
+  }
+
+  return tags.length ? tags : null;
+}
+
 // ── Store assignment detection ────────────────────────────────────────────
 
 function detectStoreAssignment(methods, src) {
@@ -908,6 +975,12 @@ function renderAnalysis(res, filename, filepath) {
   html += isV2
     ? `<span class="badge b-v2">V2 model</span>`
     : `<span class="badge b-v1">V1 model</span>`;
+  if (res.dvmTags) {
+    res.dvmTags.forEach(t => {
+      const cls = t.conditional ? 'b-dvm-cond' : 'b-dvm';
+      html += `<span class="badge ${cls}" title="${t.conditional ? 'Conditionally assigned' : 'Always assigned'}">🏷️ ${H(t.value)}</span>`;
+    });
+  }
   html += `</div></div>`;
 
   // Pattern 1 — explicit builders
@@ -922,6 +995,9 @@ function renderAnalysis(res, filename, filepath) {
     if (res.mapping && !res.mappingCallsSuper) html += renderMappingSection(res.mapping);
     if (res.mapping && res.mappingCallsSuper)  html += renderMappingOverrides(res.mapping);
   }
+
+  // DVM tags section
+  if (res.dvmTags) html += renderDvmSection(res.dvmTags);
 
   // Store assignment section (Local feeds)
   if (res.storeAssignment) html += renderStoreAssignmentSection(res.storeAssignment);
@@ -1166,6 +1242,35 @@ function renderXform(entry) {
   }
 
   return html + `</div>`;
+}
+
+function renderDvmSection(tags) {
+  let html = `<div class="section">
+    <div class="sec-hdr">🏷️  DVM Tags <span class="sec-desc">Tags assigned to offers for the Dynamic Value Module</span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:220px">Tag</th>
+        <th style="width:140px">Assignment</th>
+        <th>Condition</th>
+      </tr></thead>
+      <tbody>`;
+  tags.forEach(t => {
+    const assignment = t.conditional
+      ? `<span class="xbadge x-inline">conditional</span>`
+      : `<span class="xbadge x-direct">always</span>`;
+    const condition = t.conditional && t.conditionCols.length
+      ? `<div class="tags">${t.conditionCols.map(c => `<span class="tag">${H(c)}</span>`).join('')}</div>`
+      : t.conditional ? `<span class="tag empty">see code</span>` : `<span class="tag empty">—</span>`;
+    const enrichNote = t.apiEnrichment
+      ? `<div style="margin-top:4px;font-size:11px;color:#57606a">⚡ can be overridden by API enrichment</div>`
+      : '';
+    html += `<tr>
+      <td><span class="tag" style="font-size:12px">${H(t.value)}</span></td>
+      <td><div class="xform">${assignment}${enrichNote}</div></td>
+      <td>${condition}</td>
+    </tr>`;
+  });
+  return html + `</tbody></table></div>`;
 }
 
 function renderStoreAssignmentSection(a) {
