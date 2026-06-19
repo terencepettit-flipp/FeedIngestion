@@ -1476,12 +1476,29 @@ function applyDeepLink() {
   if (!hash) return;
   const slash = hash.indexOf('/');
   if (slash === -1) return;
-  const folderLabel = hash.substring(0, slash);
-  const filename    = hash.substring(slash + 1);
+  const prefix   = hash.substring(0, slash);
+  const filename = hash.substring(slash + 1);
+
+  // AMP deep link
+  if (prefix === 'AMP') {
+    if (_activeTab !== 'amp') {
+      document.querySelector('.tab-btn[data-tab="amp"]').click();
+    }
+    let attempts = 0;
+    const waitForFile = () => {
+      const el = document.querySelector(`.file-item.rb[data-amp][data-name="${filename}"]`);
+      if (el) { el.click(); return; }
+      if (++attempts < 30) setTimeout(waitForFile, 200);
+    };
+    waitForFile();
+    return;
+  }
+
+  // Feed Ingestion deep link
+  const folderLabel = prefix;
   const folderIdx   = FOLDERS.findIndex(f => f.label === folderLabel);
   if (folderIdx === -1) return;
 
-  // Phase 1: wait for folder rows to render (loadList is async)
   let folderAttempts = 0;
   const waitForFolder = () => {
     const folderRow = document.querySelector(`.folder-row[data-idx="${folderIdx}"]`);
@@ -1491,7 +1508,6 @@ function applyDeepLink() {
     }
     if (!folderRow.classList.contains('open')) folderRow.click();
 
-    // Phase 2: wait for file items to render (folder fetch is async)
     let fileAttempts = 0;
     const waitForFile = () => {
       const el = document.querySelector(`.file-item.rb[data-folder-idx="${folderIdx}"][data-name="${filename}"]`);
@@ -1540,6 +1556,7 @@ async function loadAmpFileList() {
 async function openAmpFile(row) {
   document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
   row.classList.add('on');
+  history.replaceState(null, '', '#AMP/' + encodeURIComponent(row.dataset.name));
   const main = document.getElementById('main');
   main.innerHTML = '<div class="notice">Fetching…</div>';
   try {
@@ -1871,8 +1888,17 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
 // ── Boot ──────────────────────────────────────────────────────────────────
 if (TOKEN) {
   tokenGate.classList.add('hidden');
-  loadList();      // synchronous — folder rows are in the DOM immediately after
-  applyDeepLink(); // safe to run straight away
+  const _bootHash = decodeURIComponent(window.location.hash.slice(1));
+  if (_bootHash.startsWith('AMP/')) {
+    _activeTab = 'amp';
+    document.querySelectorAll('.tab-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.tab === 'amp')
+    );
+    loadAmpFileList().then(() => applyDeepLink());
+  } else {
+    loadList();      // synchronous — folder rows are in the DOM immediately after
+    applyDeepLink(); // safe to run straight away
+  }
 }
 
 // ── Hide non-feed fields toggle ───────────────────────────────────────────
