@@ -1725,12 +1725,19 @@ function analyzeMapper(src) {
 }
 
 function parseOutputFields(body, skuList) {
-  // Pre-pass: track local variable assignments, e.g. sku = product[:lot_num]
+  // Pre-pass: track local variable assignments
   const varSources = {};
   for (const line of body.split('\n')) {
     const am = line.match(/^\s+(\w+)\s*=\s*(.+)/);
     if (!am) continue;
-    const src = classifyMapperValue(am[2].trim(), skuList);
+    const rhs = am[2].trim();
+    // Detect feeds[N].find{...} or feeds[N][M] → remember as feed_ref
+    const feedRefM = rhs.match(/^feeds\[(\d+)\]/);
+    if (feedRefM) {
+      varSources[am[1]] = { type: 'feed_ref', feedIdx: parseInt(feedRefM[1]) };
+      continue;
+    }
+    const src = classifyMapperValue(rhs, skuList);
     if (src.type !== 'expr') varSources[am[1]] = src;
   }
 
@@ -1741,8 +1748,18 @@ function parseOutputFields(body, skuList) {
     const field = m[1];
     const value = m[2].trim().replace(/,\s*$/, '');
     let source = classifyMapperValue(value, skuList);
-    // Resolve plain local variable references via pre-pass map
-    if (source.type === 'expr' && varSources[value]) source = varSources[value];
+    if (source.type === 'expr') {
+      if (varSources[value]) {
+        // Plain variable reference (e.g. store_sets)
+        source = varSources[value];
+      } else {
+        // var&.dig(:key) or var.dig(:key) — resolve through feed_ref
+        const digM = value.match(/^(\w+)&?\.dig\(:(\w+)\)/);
+        if (digM && varSources[digM[1]]) {
+          source = { type: 'feed', key: digM[2] };
+        }
+      }
+    }
     fields.push({ field, value, source });
   }
   return fields.length ? fields : null;
@@ -1751,11 +1768,12 @@ function parseOutputFields(body, skuList) {
 function classifyMapperValue(value, skuList) {
   if (value === 'nil') return { type: 'nil' };
 
-  // sku_row[:key]
-  const skuM = value.match(/sku_row\[:(\w+)\]/);
+  // sku_row[:key] or sku_row[:'Key With Spaces']
+  const skuM = value.match(/sku_row\[:\s*(?:'([^']+)'|(\w+))\s*\]/);
   if (skuM) {
-    const col = skuList?.columns?.find(c => c.key === skuM[1])?.col || skuM[1];
-    return { type: 'sku', key: skuM[1], col };
+    const skuKey = skuM[1] || skuM[2];
+    const col = skuList?.columns?.find(c => c.key === skuKey)?.col || skuKey;
+    return { type: 'sku', key: skuKey, col };
   }
 
   // product[:key] or feeds[n][m][:key]
