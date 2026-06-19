@@ -1718,23 +1718,27 @@ function analyzeMapper(src) {
   const methods = extractMethods(src);
   if (methods.product_item) {
     out.productItemBody = methods.product_item;
-    out.outputFields = parseOutputFields(methods.product_item, out.skuList);
+    out.outputFields = parseOutputFields(methods.product_item, out.skuList, out.dataFeeds);
   }
 
   return out;
 }
 
-function parseOutputFields(body, skuList) {
+function parseOutputFields(body, skuList, dataFeeds) {
+  const feedNames = dataFeeds ? Object.keys(dataFeeds) : [];
+  const multiFeeds = feedNames.length > 1;
+
   // Pre-pass: track local variable assignments
   const varSources = {};
   for (const line of body.split('\n')) {
     const am = line.match(/^\s+(\w+)\s*=\s*(.+)/);
     if (!am) continue;
     const rhs = am[2].trim();
-    // Detect feeds[N].find{...} or feeds[N][M] → remember as feed_ref
+    // Detect feeds[N].find{...} or feeds[N][M] → remember as feed_ref with name
     const feedRefM = rhs.match(/^feeds\[(\d+)\]/);
     if (feedRefM) {
-      varSources[am[1]] = { type: 'feed_ref', feedIdx: parseInt(feedRefM[1]) };
+      const feedIdx = parseInt(feedRefM[1]);
+      varSources[am[1]] = { type: 'feed_ref', feedIdx, feedName: feedNames[feedIdx] || null };
       continue;
     }
     const src = classifyMapperValue(rhs, skuList);
@@ -1748,15 +1752,25 @@ function parseOutputFields(body, skuList) {
     const field = m[1];
     const value = m[2].trim().replace(/,\s*$/, '');
     let source = classifyMapperValue(value, skuList);
+    if (source.type === 'feed' && multiFeeds) {
+      // Enrich with specific feed name: variable[:key] or feeds[N][M][:key]
+      const varFeedM = value.match(/^(\w+)\[:/);
+      if (varFeedM && varSources[varFeedM[1]]?.type === 'feed_ref') {
+        source = { ...source, feedName: varSources[varFeedM[1]].feedName };
+      } else {
+        const directM = value.match(/^feeds\[(\d+)\]/);
+        if (directM) source = { ...source, feedName: feedNames[parseInt(directM[1])] || null };
+      }
+    }
     if (source.type === 'expr') {
       if (varSources[value]) {
-        // Plain variable reference (e.g. store_sets)
         source = varSources[value];
       } else {
         // var&.dig(:key) or var.dig(:key) — resolve through feed_ref
         const digM = value.match(/^(\w+)&?\.dig\(:(\w+)\)/);
         if (digM && varSources[digM[1]]) {
-          source = { type: 'feed', key: digM[2] };
+          const ref = varSources[digM[1]];
+          source = { type: 'feed', key: digM[2], feedName: multiFeeds ? ref.feedName : null };
         }
       }
     }
@@ -1871,7 +1885,7 @@ function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom) {
     switch (f.source.type) {
       case 'nil':      src = `<span class="tag empty">—</span>`; break;
       case 'sku':      src = `<span class="amp-src">SKU list → </span><span class="amp-col">${H(f.source.col)}</span>`; break;
-      case 'feed':     src = `<span class="amp-src">Feed → </span><span class="amp-col">${H(f.source.key)}</span>`; break;
+      case 'feed':     src = `<span class="amp-src">${H(f.source.feedName || 'Feed')} → </span><span class="amp-col">${H(f.source.key)}</span>`; break;
       case 'computed': src = `<span class="xbadge x-builder" style="font-size:11px">${H(f.source.method)}()</span>`; break;
       default:         src = `<span class="amp-src">${H(f.source.expr)}</span>`;
     }
