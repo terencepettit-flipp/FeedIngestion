@@ -145,6 +145,24 @@
     .b-dvm-cond    { background: #fef3c7; color: #b45309; border-color: #fcd34d; border-style: dashed; }
 
     /* ── Section ──────────────────────────────────────────────────────────── */
+    /* ── Tab bar ──────────────────────────────────────────────────────────── */
+    .tab-bar { display: flex; background: #1c2128; border-bottom: 1px solid #444c56; flex-shrink: 0; padding: 0 16px; gap: 4px; }
+    .tab-btn  { background: none; border: none; border-bottom: 2px solid transparent; color: #8b949e; cursor: pointer; font-family: inherit; font-size: 13px; margin-bottom: -1px; padding: 10px 14px; }
+    .tab-btn:hover  { color: #e6edf3; }
+    .tab-btn.active { color: #e6edf3; border-bottom-color: #58a6ff; }
+
+    /* ── AMP-specific styles ──────────────────────────────────────────────── */
+    .amp-col-table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d0d7de; border-radius: 8px; overflow: hidden; font-size: 13px; margin-bottom: 0; }
+    .amp-col-table th { padding: 8px 14px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: #57606a; background: #f6f8fa; border-bottom: 1px solid #d0d7de; }
+    .amp-col-table td { padding: 9px 14px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+    .amp-col-table tbody tr:last-child td { border-bottom: none; }
+    .amp-col-table tbody tr:hover td { background: #fafafa; }
+    .amp-key  { font-family: ui-monospace, monospace; font-size: 12px; color: #0550ae; font-weight: 600; }
+    .amp-col  { font-family: ui-monospace, monospace; font-size: 11px; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 4px; padding: 2px 7px; }
+    .amp-src  { font-size: 12px; color: #57606a; }
+    .b-versions { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+    .b-amp      { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+
     .section   { margin-bottom: 36px; }
     .sec-hdr   { font-size: 15px; font-weight: 600; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #d0d7de; }
     .sec-note  { font-size: 13px; color: #57606a; font-style: italic; margin-bottom: 12px; line-height: 1.6; }
@@ -283,6 +301,11 @@
       Hide non-feed fields
     </label>
     <button class="token-reset-btn" id="token-reset-btn" title="Change token">🔑 Token</button>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="ingestion">📥 Feed Ingestion</button>
+    <button class="tab-btn" data-tab="amp">🗞️ AMP Production</button>
   </div>
 
   <div class="shell">
@@ -1479,6 +1502,371 @@ function applyDeepLink() {
   };
   waitForFolder();
 }
+
+// ── AMP Production ────────────────────────────────────────────────────────
+
+const AMP_REPO = 'wishabi/cp-legacy';
+const AMP_PATH = 'app/lib/content_production/data_mappers';
+const AMP_REF  = 'main';
+let _ampFileCache = null;
+
+async function loadAmpFileList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="notice">Loading…</div>';
+  try {
+    if (!_ampFileCache) {
+      const files = await ghGet(
+        `https://api.github.com/repos/${AMP_REPO}/contents/${AMP_PATH}?ref=${AMP_REF}`
+      );
+      _ampFileCache = files
+        .filter(f => f.type === 'file' && f.name.endsWith('.rb') && f.name !== 'base.rb')
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    el.innerHTML = _ampFileCache.map(f =>
+      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}" data-amp="1">
+        <span class="ficon">📄</span>
+        <span class="fname">${friendlyName(f.name)}</span>
+        <span class="fsize">${fmtSize(f.size)}</span>
+      </div>`
+    ).join('');
+    el.querySelectorAll('.file-item.rb[data-amp]').forEach(row =>
+      row.addEventListener('click', () => openAmpFile(row))
+    );
+  } catch (e) {
+    el.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+async function openAmpFile(row) {
+  document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
+  row.classList.add('on');
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="notice">Fetching…</div>';
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${AMP_REPO}/contents/${row.dataset.path}?ref=${AMP_REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const res = analyzeMapper(src);
+
+    // If this mapper inherits everything from a parent, fetch and show the parent's analysis
+    const isEmpty = !res.skuList && !res.dataFeeds && !res.outputFields;
+    if (isEmpty && res.parentMapper) {
+      const parentSrc = await fetchAmpParent(res.parentMapper);
+      if (parentSrc) {
+        res.inherited = { name: res.parentMapper, analysis: analyzeMapper(parentSrc) };
+      }
+    }
+
+    const ghUrl = `https://github.com/${AMP_REPO}/blob/${AMP_REF}/${row.dataset.path}`;
+    main.innerHTML = renderMapperAnalysis(res, row.dataset.name, ghUrl);
+    if (window.Prism) Prism.highlightAllUnder(main);
+    main.querySelectorAll('.snip-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const block = btn.closest('.xform').querySelector('.code-block');
+        const isOpen = block.classList.toggle('open');
+        btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+      })
+    );
+  } catch (e) {
+    main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+async function fetchAmpParent(parentClassName) {
+  const filename = parentClassName.replace(/([A-Z])/g, c => c.toLowerCase()) + '.rb';
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${AMP_REPO}/contents/${AMP_PATH}/${filename}?ref=${AMP_REF}`
+    );
+    return atob(data.content.replace(/\n/g, ''));
+  } catch (_) {
+    return null;
+  }
+}
+
+// ── AMP parser ────────────────────────────────────────────────────────────
+
+/** Extract the text of a balanced {...} block starting at index i in src. */
+function extractBlock(src, i) {
+  if (src[i] !== '{') return null;
+  let depth = 0, j = i;
+  while (j < src.length) {
+    const c = src[j];
+    if (c === '{') depth++;
+    else if (c === '}') { if (--depth === 0) return src.substring(i, j + 1); }
+    else if (c === "'" || c === '"') { // skip strings
+      const q = c; j++;
+      while (j < src.length && src[j] !== q) { if (src[j] === '\\') j++; j++; }
+    }
+    j++;
+  }
+  return null;
+}
+
+/** Find the opening brace of a named constant and extract its hash body. */
+function extractConstHash(src, constName) {
+  const re = new RegExp(constName + '\\s*=\\s*\\{');
+  const m = re.exec(src);
+  if (!m) return null;
+  return extractBlock(src, m.index + m[0].lastIndexOf('{'));
+}
+
+/** Parse symbol-key → string-value pairs from a hash text snippet. */
+function parseSymbolColumns(hashText) {
+  const cols = [];
+  const re = /(\w+):\s*['"]([^'"]+)['"]/g;
+  let m;
+  while ((m = re.exec(hashText)) !== null) cols.push({ key: m[1], col: m[2] });
+  return cols;
+}
+
+function analyzeMapper(src) {
+  const out = {
+    merchantId:      null,
+    versions:        [],
+    skuListRequired: !/SKU_LIST_REQUIRED\s*=\s*false/.test(src),
+    skuList:         null,
+    dataFeeds:       null,
+    productItemBody: null,
+    outputFields:    null,
+  };
+
+  // Parent mapper class (if not Base)
+  const classM = src.match(/class\s+ContentProduction::DataMappers::(\w+)\s*<\s*ContentProduction::DataMappers::(\w+)/);
+  if (classM && classM[2] !== 'Base') {
+    out.parentMapper = classM[2]; // e.g. 'Circlek'
+  }
+
+  // MERCHANT_ID
+  const midM = src.match(/MERCHANT_ID\s*=\s*(\d+)/);
+  if (midM) out.merchantId = midM[1];
+
+  // VERSIONS — extract just the top-level keys
+  const verHash = extractConstHash(src, 'VERSIONS');
+  if (verHash) {
+    const re = /['"]([^'"]+)['"]\s*=>/g; let m;
+    while ((m = re.exec(verHash)) !== null) out.versions.push(m[1]);
+  }
+
+  // SKU_LIST
+  const skuHash = extractConstHash(src, 'SKU_LIST');
+  if (skuHash) {
+    const idM   = skuHash.match(/id_column:\s*['"]([^'"]+)['"]/);
+    const srcM  = skuHash.match(/source:\s*:(\w+)/);
+    const colsStart = skuHash.indexOf('columns:');
+    let columns = [];
+    if (colsStart > -1) {
+      const colBrace = skuHash.indexOf('{', colsStart);
+      const colsBlock = colBrace > -1 ? extractBlock(skuHash, colBrace) : null;
+      if (colsBlock) columns = parseSymbolColumns(colsBlock);
+    }
+    out.skuList = { idColumn: idM ? idM[1] : null, sourceRef: srcM ? srcM[1] : null, columns };
+  }
+
+  // DATA_FEEDS
+  const feedHash = extractConstHash(src, 'DATA_FEEDS');
+  if (feedHash) {
+    const feeds = {};
+    const SKIP = new Set(['id_column','id2_column','columns','symbolize_keys','source','encoding']);
+    const feedRe = /(\w+):\s*\{/g; let fm;
+    while ((fm = feedRe.exec(feedHash)) !== null) {
+      const name = fm[1];
+      if (SKIP.has(name)) continue;
+      const subBlock = extractBlock(feedHash, fm.index + fm[0].length - 1);
+      if (!subBlock) continue;
+      const idM = subBlock.match(/id_column:\s*['"]([^'"]+)['"]/);
+      const colsStart = subBlock.indexOf('columns:');
+      let columns = [];
+      if (colsStart > -1) {
+        const cb = subBlock.indexOf('{', colsStart);
+        const colsBlock = cb > -1 ? extractBlock(subBlock, cb) : null;
+        if (colsBlock) columns = parseSymbolColumns(colsBlock);
+      }
+      feeds[name] = { idColumn: idM ? idM[1] : null, columns };
+    }
+    if (Object.keys(feeds).length) out.dataFeeds = feeds;
+  }
+
+  // Resolve SKU_LIST id_column from source reference (e.g. source: :product_data)
+  if (out.skuList && !out.skuList.idColumn) {
+    if (out.skuList.sourceRef && out.dataFeeds?.[out.skuList.sourceRef]) {
+      out.skuList.idColumn = out.dataFeeds[out.skuList.sourceRef].idColumn || 'SKU';
+    } else {
+      out.skuList.idColumn = 'SKU';
+    }
+  }
+
+  // product_item
+  const methods = extractMethods(src);
+  if (methods.product_item) {
+    out.productItemBody = methods.product_item;
+    out.outputFields = parseOutputFields(methods.product_item, out.skuList);
+  }
+
+  return out;
+}
+
+function parseOutputFields(body, skuList) {
+  // Pre-pass: track local variable assignments, e.g. sku = product[:lot_num]
+  const varSources = {};
+  for (const line of body.split('\n')) {
+    const am = line.match(/^\s+(\w+)\s*=\s*(.+)/);
+    if (!am) continue;
+    const src = classifyMapperValue(am[2].trim(), skuList);
+    if (src.type !== 'expr') varSources[am[1]] = src;
+  }
+
+  const fields = [];
+  const re = /['"]([^'"]+)['"]\s*=>\s*(.+?)(?:,\s*)?$/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    const field = m[1];
+    const value = m[2].trim().replace(/,\s*$/, '');
+    let source = classifyMapperValue(value, skuList);
+    // Resolve plain local variable references via pre-pass map
+    if (source.type === 'expr' && varSources[value]) source = varSources[value];
+    fields.push({ field, value, source });
+  }
+  return fields.length ? fields : null;
+}
+
+function classifyMapperValue(value, skuList) {
+  if (value === 'nil') return { type: 'nil' };
+
+  // sku_row[:key]
+  const skuM = value.match(/sku_row\[:(\w+)\]/);
+  if (skuM) {
+    const col = skuList?.columns?.find(c => c.key === skuM[1])?.col || skuM[1];
+    return { type: 'sku', key: skuM[1], col };
+  }
+
+  // product[:key] or feeds[n][m][:key]
+  const prodM = value.match(/(?:product|feeds\[[\d,\s]*\](?:\[[\d,\s]*\])?)\[:(\w+)\]/);
+  if (prodM) return { type: 'feed', key: prodM[1] };
+
+  // method call
+  const methM = value.match(/^(\w+)\(/);
+  if (methM) return { type: 'computed', method: methM[1] };
+
+  return { type: 'expr', expr: value.substring(0, 40) };
+}
+
+// ── AMP renderer ──────────────────────────────────────────────────────────
+
+function renderMapperAnalysis(res, filename, ghUrl) {
+  const title = friendlyName(filename);
+  let html = `<div class="a-hdr">
+    <h2>${H(title)}${ghUrl ? ` <span class="file-ref">(<a href="${ghUrl}" target="_blank" rel="noopener">${H(filename)}</a>)</span>` : ''}</h2>
+    <div class="badge-row">
+      <span class="badge b-amp">🗞️ AMP Formatter</span>`;
+  if (res.merchantId) html += `<span class="badge b-merchant">🏪 Merchant #${H(res.merchantId)}</span>`;
+  if (res.versions.length) html += `<span class="badge b-versions">${res.versions.join(' · ')}</span>`;
+  html += `</div></div>`;
+
+  // If thin subclass, show parent's sections with inherited label
+  if (res.inherited) {
+    const p = res.inherited.analysis;
+    const pName = res.inherited.name;
+    html += `<p class="sec-note" style="margin-bottom:20px">Inherits all mapping from <strong>${H(pName)}</strong> — only <code>MERCHANT_ID</code> is overridden.</p>`;
+    if (p.skuList)   html += renderAmpSkuList(p.skuList, pName);
+    if (p.dataFeeds) html += renderAmpDataFeeds(p.dataFeeds, pName);
+    if (p.outputFields) html += renderAmpOutputFields(p.outputFields, p.productItemBody, pName);
+    return html;
+  }
+
+  if (res.skuList)    html += renderAmpSkuList(res.skuList);
+  if (res.dataFeeds)  html += renderAmpDataFeeds(res.dataFeeds);
+  if (res.outputFields) html += renderAmpOutputFields(res.outputFields, res.productItemBody);
+
+  return html;
+}
+
+function renderAmpSkuList(skuList, inheritedFrom) {
+  const label = inheritedFrom ? `📋  SKU List <span class="sec-desc">inherited from <strong>${H(inheritedFrom)}</strong> · id: <code>${H(skuList.idColumn)}</code></span>`
+                              : `📋  SKU List <span class="sec-desc">Columns read from the SKU list (id: <code>${H(skuList.idColumn)}</code>)</span>`;
+  let html = `<div class="section"><div class="sec-hdr">${label}</div>`;
+  if (skuList.columns.length) {
+    html += `<table class="amp-col-table"><thead><tr><th>Internal key</th><th>Source column</th></tr></thead><tbody>`;
+    skuList.columns.forEach(c => {
+      html += `<tr><td><span class="amp-key">${H(c.key)}</span></td><td><span class="amp-col">${H(c.col)}</span></td></tr>`;
+    });
+    html += `</tbody></table>`;
+  } else {
+    html += `<p class="sec-note">No column mapping defined (uses source feed directly).</p>`;
+  }
+  return html + `</div>`;
+}
+
+function renderAmpDataFeeds(dataFeeds, inheritedFrom) {
+  let html = '';
+  Object.entries(dataFeeds).forEach(([feedName, feed]) => {
+    const label = inheritedFrom
+      ? `📄  ${H(feedName)} <span class="sec-desc">inherited from <strong>${H(inheritedFrom)}</strong>${feed.idColumn ? ` · id: <code>${H(feed.idColumn)}</code>` : ''}</span>`
+      : `📄  ${H(feedName)} <span class="sec-desc">Data feed${feed.idColumn ? ` (id: <code>${H(feed.idColumn)}</code>)` : ''}</span>`;
+    html += `<div class="section"><div class="sec-hdr">${label}</div>`;
+    if (feed.columns.length) {
+      html += `<table class="amp-col-table"><thead><tr><th>Internal key</th><th>Source column</th></tr></thead><tbody>`;
+      feed.columns.forEach(c => {
+        html += `<tr><td><span class="amp-key">${H(c.key)}</span></td><td><span class="amp-col">${H(c.col)}</span></td></tr>`;
+      });
+      html += `</tbody></table>`;
+    } else {
+      html += `<p class="sec-note">Columns defined at runtime or not listed explicitly.</p>`;
+    }
+    html += `</div>`;
+  });
+  return html;
+}
+
+function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom) {
+  const label = inheritedFrom
+    ? `📤  Output Fields <span class="sec-desc">inherited from <strong>${H(inheritedFrom)}</strong></span>`
+    : `📤  Output Fields <span class="sec-desc">How each field in the product item is populated</span>`;
+  let html = `<div class="section"><div class="sec-hdr">${label}</div>`;
+  if (productItemBody) {
+    html += `<div style="margin-bottom:10px"><div class="xform"><span class="xbadge x-builder">product_item</span>
+      <span class="view-code-inline">[<button class="snip-btn">▼ view code</button>]</span>
+      <pre class="code-block"><code class="language-ruby">${H(productItemBody)}</code></pre>
+    </div></div>`;
+  }
+  html += `<table class="amp-col-table"><thead><tr><th style="width:200px">Output field</th><th>Source</th></tr></thead><tbody>`;
+  outputFields.forEach(f => {
+    let src = '';
+    switch (f.source.type) {
+      case 'nil':      src = `<span class="tag empty">—</span>`; break;
+      case 'sku':      src = `<span class="amp-src">SKU list → </span><span class="amp-col">${H(f.source.col)}</span>`; break;
+      case 'feed':     src = `<span class="amp-src">Feed → </span><span class="amp-col">${H(f.source.key)}</span>`; break;
+      case 'computed': src = `<span class="xbadge x-builder" style="font-size:11px">${H(f.source.method)}()</span>`; break;
+      default:         src = `<span class="amp-src">${H(f.source.expr)}</span>`;
+    }
+    html += `<tr><td><span class="fname-code">${H(f.field)}</span></td><td>${src}</td></tr>`;
+  });
+  return html + `</tbody></table></div>`;
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────
+let _activeTab = 'ingestion';
+
+document.querySelectorAll('.tab-btn').forEach(btn =>
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === _activeTab) return;
+    _activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    // Reset sidebar and main panel
+    document.getElementById('file-list').innerHTML = '<div class="notice">Loading…</div>';
+    document.getElementById('main').innerHTML = `<div class="placeholder">
+      <div class="big-icon">${_activeTab === 'amp' ? '🗞️' : '📋'}</div>
+      <p>Select a retailer to inspect<br>its field mappings.</p>
+    </div>`;
+    document.querySelectorAll('.folder-row, .folder-children').forEach(el => el.remove());
+    if (_activeTab === 'amp') {
+      loadAmpFileList();
+    } else {
+      loadList();
+    }
+  })
+);
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 if (TOKEN) {
