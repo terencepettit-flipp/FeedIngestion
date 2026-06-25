@@ -1820,12 +1820,14 @@ function renderMapperAnalysis(res, filename, ghUrl) {
     html += `<p class="sec-note" style="margin-bottom:20px">Inherits all mapping from <strong>${H(pName)}</strong> — only <code>MERCHANT_ID</code> is overridden.</p>`;
     if (p.skuList)   html += renderAmpSkuList(p.skuList, pName);
     if (p.dataFeeds) html += renderAmpDataFeeds(p.dataFeeds, pName);
+    if (p.skuList && p.dataFeeds) html += renderAmpJoinKeys(p.skuList, p.dataFeeds);
     if (p.outputFields) html += renderAmpOutputFields(p.outputFields, p.productItemBody, pName);
     return html;
   }
 
   if (res.skuList)    html += renderAmpSkuList(res.skuList);
   if (res.dataFeeds)  html += renderAmpDataFeeds(res.dataFeeds);
+  if (res.skuList && res.dataFeeds) html += renderAmpJoinKeys(res.skuList, res.dataFeeds);
   if (res.outputFields) html += renderAmpOutputFields(res.outputFields, res.productItemBody);
 
   return html;
@@ -1866,6 +1868,18 @@ function renderAmpDataFeeds(dataFeeds, inheritedFrom) {
     html += `</div>`;
   });
   return html;
+}
+
+function renderAmpJoinKeys(skuList, dataFeeds) {
+  const feedEntries = Object.entries(dataFeeds);
+  if (!feedEntries.length || !skuList?.idColumn) return '';
+  let html = `<div class="section"><div class="sec-hdr">🔗  Join Keys <span class="sec-desc">Column used to match records across all input files</span></div>`;
+  html += `<table class="amp-col-table"><thead><tr><th>File</th><th>Join column</th></tr></thead><tbody>`;
+  html += `<tr><td><span class="amp-src">SKU list</span></td><td><span class="amp-col">${H(skuList.idColumn)}</span></td></tr>`;
+  feedEntries.forEach(([feedName, feed]) => {
+    html += `<tr><td><span class="amp-src">${H(feedName)}</span></td><td><span class="amp-col">${H(feed.idColumn || '—')}</span></td></tr>`;
+  });
+  return html + `</tbody></table></div>`;
 }
 
 function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom) {
