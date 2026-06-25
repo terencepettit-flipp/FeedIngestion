@@ -1585,6 +1585,15 @@ async function openAmpFile(row) {
         btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
       })
     );
+    main.querySelectorAll('.amp-snip-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const codeRow = btn.closest('tr').nextElementSibling;
+        const isOpen = codeRow.style.display === 'none';
+        codeRow.style.display = isOpen ? '' : 'none';
+        btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+        if (isOpen && window.Prism) Prism.highlightAllUnder(codeRow);
+      })
+    );
   } catch (e) {
     main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
   }
@@ -1716,6 +1725,7 @@ function analyzeMapper(src) {
 
   // product_item
   const methods = extractMethods(src);
+  out.helperMethods = methods;
   if (methods.product_item) {
     out.productItemBody = methods.product_item;
     out.outputFields = parseOutputFields(methods.product_item, out.skuList, out.dataFeeds);
@@ -1821,14 +1831,14 @@ function renderMapperAnalysis(res, filename, ghUrl) {
     if (p.skuList)   html += renderAmpSkuList(p.skuList, pName);
     if (p.dataFeeds) html += renderAmpDataFeeds(p.dataFeeds, pName);
     if (p.skuList && p.dataFeeds) html += renderAmpJoinKeys(p.skuList, p.dataFeeds);
-    if (p.outputFields) html += renderAmpOutputFields(p.outputFields, p.productItemBody, pName);
+    if (p.outputFields) html += renderAmpOutputFields(p.outputFields, p.productItemBody, pName, p.helperMethods);
     return html;
   }
 
   if (res.skuList)    html += renderAmpSkuList(res.skuList);
   if (res.dataFeeds)  html += renderAmpDataFeeds(res.dataFeeds);
   if (res.skuList && res.dataFeeds) html += renderAmpJoinKeys(res.skuList, res.dataFeeds);
-  if (res.outputFields) html += renderAmpOutputFields(res.outputFields, res.productItemBody);
+  if (res.outputFields) html += renderAmpOutputFields(res.outputFields, res.productItemBody, null, res.helperMethods);
 
   return html;
 }
@@ -1882,7 +1892,7 @@ function renderAmpJoinKeys(skuList, dataFeeds) {
   return html + `</tbody></table></div>`;
 }
 
-function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom) {
+function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom, helperMethods) {
   const label = inheritedFrom
     ? `📤  Output Fields <span class="sec-desc">inherited from <strong>${H(inheritedFrom)}</strong></span>`
     : `📤  Output Fields <span class="sec-desc">How each field in the product item is populated</span>`;
@@ -1900,10 +1910,18 @@ function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom) {
       case 'nil':      src = `<span class="tag empty">—</span>`; break;
       case 'sku':      src = `<span class="amp-src">SKU list → </span><span class="amp-col">${H(f.source.col)}</span>`; break;
       case 'feed':     src = `<span class="amp-src">${H(f.source.feedName || 'Feed')} → </span><span class="amp-col">${H(f.source.key)}</span>`; break;
-      case 'computed': src = `<span class="xbadge x-builder" style="font-size:11px">${H(f.source.method)}()</span>`; break;
+      case 'computed': {
+        const methodBody = helperMethods?.[f.source.method];
+        src = `<span class="xbadge x-builder" style="font-size:11px">${H(f.source.method)}()</span>`;
+        if (methodBody) src += ` <span class="view-code-inline">[<button class="amp-snip-btn">▼ view code</button>]</span>`;
+        break;
+      }
       default:         src = `<span class="amp-src">${H(f.source.expr)}</span>`;
     }
     html += `<tr><td><span class="fname-code">${H(f.field)}</span></td><td>${src}</td></tr>`;
+    if (f.source.type === 'computed' && helperMethods?.[f.source.method]) {
+      html += `<tr class="amp-code-row" style="display:none"><td colspan="2" style="padding:0 14px 10px"><pre style="margin:0;border-radius:6px;overflow:auto;max-height:300px;background:#161b22;padding:12px"><code class="language-ruby">${H(helperMethods[f.source.method])}</code></pre></td></tr>`;
+    }
   });
   return html + `</tbody></table></div>`;
 }
