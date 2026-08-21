@@ -2092,7 +2092,7 @@ function classifyGfValue(value) {
   // Method call → computed
   const methodM = value.match(/^(\w+)\(/);
   if (methodM) return { type: 'computed', method: methodM[1] };
-  return { type: 'expr', expr: value.substring(0, 50) };
+  return { type: 'expr', expr: value };
 }
 
 function renderGfAnalysis(res, filename, ghUrl) {
@@ -2136,7 +2136,7 @@ function renderGfAnalysis(res, filename, ghUrl) {
           if (body) src += ` <span class="view-code-inline">[<button class="amp-snip-btn">▼ view code</button>]</span>`;
           break;
         }
-        default: src = `<span class="amp-src">${H(s.expr)}</span>`;
+        default: src = `<span class="fname-code" style="font-size:11px;color:#8b949e">${H(s.expr)}</span>`;
       }
       html += `<tr><td><span class="fname-code">${H(f.field)}</span></td><td>${src}</td></tr>`;
       if (s.type === 'computed' && res.helperMethods?.[s.method]) {
