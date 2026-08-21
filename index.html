@@ -306,6 +306,7 @@
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="ingestion">📥 Feed Ingestion</button>
     <button class="tab-btn" data-tab="amp">🗞️ AMP Production</button>
+    <button class="tab-btn" data-tab="godfather">🎩 Godfather</button>
   </div>
 
   <div class="shell">
@@ -455,6 +456,15 @@ async function openFile(row) {
         const block = btn.closest('.xform').querySelector('.code-block');
         const isOpen = block.classList.toggle('open');
         btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+      })
+    );
+    main.querySelectorAll('.amp-snip-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const codeRow = btn.closest('tr').nextElementSibling;
+        const isOpen = codeRow.style.display === 'none';
+        codeRow.style.display = isOpen ? '' : 'none';
+        btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+        if (isOpen && window.Prism) Prism.highlightAllUnder(codeRow);
       })
     );
   } catch (e) {
@@ -781,15 +791,17 @@ function extractSubMaps(body, methods) {
 
     // If variable came from inventory_details, resolve the Entry method to actual column name
     // e.g. entry&.price → Entry#price reads raw['price'] → show 'price' not 'inventory_details'
+    let entryMethod = null;
     if (cols.length === 1 && cols[0] === 'inventory_details' && _inventoryEntryMap) {
       const methodM = subExpr.match(/^\w+&?\.(\w+[?!]?)/);
       if (methodM && _inventoryEntryMap[methodM[1]]) {
         cols = [..._inventoryEntryMap[methodM[1]]];
+        entryMethod = methodM[1];
       }
     }
 
     if (cols.length || subExpr === 'nil')
-      subs.push({ subField, cols, expr: subExpr });
+      subs.push({ subField, cols, expr: subExpr, entryMethod });
   }
   return subs.length ? subs : null;
 }
@@ -1213,13 +1225,20 @@ function renderEntryRows(entry) {
 
   entry.subMaps.forEach((s, i) => {
     const last = i === entry.subMaps.length - 1;
-    html += `<tr class="sub-row${last ? ' group-end' : ''}">
+    const entryBody = s.entryMethod && _inventoryEntryBodies?.[s.entryMethod];
+    const viewCode = entryBody
+      ? `<div class="xform"><span class="view-code-inline">[<button class="amp-snip-btn">▼ view code</button>]</span></div>`
+      : '';
+    html += `<tr class="sub-row${last && !entryBody ? ' group-end' : ''}">
       <td class="sub-field-cell">
         <span class="sub-fname">${H(s.subField)}</span>
       </td>
       <td>${renderCols(s.cols)}</td>
-      <td></td>
+      <td>${viewCode}</td>
     </tr>`;
+    if (entryBody) {
+      html += `<tr class="amp-code-row sub-row${last ? ' group-end' : ''}" style="display:none"><td colspan="3" style="padding:0 14px 10px"><pre style="margin:0;border-radius:6px;overflow:auto;max-height:200px;background:#161b22;padding:12px"><code class="language-ruby">${H(entryBody)}</code></pre></td></tr>`;
+    }
   });
 
   return html;
@@ -1449,6 +1468,7 @@ async function fetchPivotDefaults() {
 // Maps Entry method names (price, sale_price, stores) to the raw feed columns
 // they read, so "entry&.price" resolves to ['price'] instead of ['inventory_details'].
 let _inventoryEntryMap = null;
+let _inventoryEntryBodies = {};
 
 async function fetchInventoryEntryMap() {
   if (_inventoryEntryMap !== null) return _inventoryEntryMap;
@@ -1458,12 +1478,13 @@ async function fetchInventoryEntryMap() {
     );
     const src = atob(data.content.replace(/\n/g, ''));
     const methods = extractMethods(src);
-    const map = {};
+    const map = {}, bodies = {};
     for (const [name, body] of Object.entries(methods)) {
       const cols = rawRefs(body);
-      if (cols.length) map[name] = cols;
+      if (cols.length) { map[name] = cols; bodies[name] = body; }
     }
     _inventoryEntryMap = map;
+    _inventoryEntryBodies = bodies;
   } catch (_) {
     _inventoryEntryMap = {}; // degrade gracefully if fetch fails
   }
@@ -1487,6 +1508,21 @@ function applyDeepLink() {
     let attempts = 0;
     const waitForFile = () => {
       const el = document.querySelector(`.file-item.rb[data-amp][data-name="${filename}"]`);
+      if (el) { el.click(); return; }
+      if (++attempts < 30) setTimeout(waitForFile, 200);
+    };
+    waitForFile();
+    return;
+  }
+
+  // Godfather deep link
+  if (prefix === 'GF') {
+    if (_activeTab !== 'godfather') {
+      document.querySelector('.tab-btn[data-tab="godfather"]').click();
+    }
+    let attempts = 0;
+    const waitForFile = () => {
+      const el = document.querySelector(`.file-item.rb[data-gf][data-name="${filename}"]`);
       if (el) { el.click(); return; }
       if (++attempts < 30) setTimeout(waitForFile, 200);
     };
@@ -1926,6 +1962,193 @@ function renderAmpOutputFields(outputFields, productItemBody, inheritedFrom, hel
   return html + `</tbody></table></div>`;
 }
 
+// ── Godfather Parsers ─────────────────────────────────────────────────────
+
+const GF_REPO = 'wishabi/godfather';
+const GF_PATH = 'lib/parsers';
+const GF_REF  = 'master';
+let _gfFileCache = null;
+
+async function loadGfFileList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="notice">Loading…</div>';
+  try {
+    if (!_gfFileCache) {
+      const files = await ghGet(
+        `https://api.github.com/repos/${GF_REPO}/contents/${GF_PATH}?ref=${GF_REF}`
+      );
+      _gfFileCache = files
+        .filter(f => f.type === 'file' && f.name.endsWith('.rb') && f.name !== 'base.rb')
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    el.innerHTML = _gfFileCache.map(f =>
+      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}" data-gf="1">
+        <span class="ficon">📄</span>
+        <span class="fname">${friendlyName(f.name)}</span>
+        <span class="fsize">${fmtSize(f.size)}</span>
+      </div>`
+    ).join('');
+    el.querySelectorAll('.file-item.rb[data-gf]').forEach(row =>
+      row.addEventListener('click', () => openGfFile(row))
+    );
+  } catch (e) {
+    el.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+async function openGfFile(row) {
+  document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
+  row.classList.add('on');
+  history.replaceState(null, '', '#GF/' + encodeURIComponent(row.dataset.name));
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="notice">Fetching…</div>';
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${GF_REPO}/contents/${row.dataset.path}?ref=${GF_REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const res = analyzeGfParser(src);
+    const ghUrl = `https://github.com/${GF_REPO}/blob/${GF_REF}/${row.dataset.path}`;
+    main.innerHTML = renderGfAnalysis(res, row.dataset.name, ghUrl);
+    if (window.Prism) Prism.highlightAllUnder(main);
+    main.querySelectorAll('.amp-snip-btn').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const codeRow = btn.closest('tr').nextElementSibling;
+        const isOpen = codeRow.style.display === 'none';
+        codeRow.style.display = isOpen ? '' : 'none';
+        btn.textContent = isOpen ? '▲ hide code' : '▼ view code';
+        if (isOpen && window.Prism) Prism.highlightAllUnder(codeRow);
+      })
+    );
+  } catch (e) {
+    main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+function analyzeGfParser(src) {
+  const res = { className: null, simpleMap: null, outputFields: [], helperMethods: {}, isTodo: false };
+
+  const classM = src.match(/class Parsers::(\w+)/);
+  res.className = classM ? classM[1] : null;
+
+  // Detect TODO stubs
+  const parseM = src.match(/def parse([\s\S]*?)(?=\n\s{4}(?:private|def |\w)|\n  end)/);
+  if (parseM && /^\s*#\s*TODO\s*$/.test(parseM[1].trim())) {
+    res.isTodo = true;
+    return res;
+  }
+
+  // Extract SIMPLE_MAP
+  const smIdx = src.indexOf('SIMPLE_MAP');
+  if (smIdx !== -1) {
+    const braceIdx = src.indexOf('{', smIdx);
+    if (braceIdx !== -1) {
+      const block = extractBlock(src, braceIdx);
+      if (block) {
+        res.simpleMap = {};
+        const re = /['"]([^'"]+)['"]\s*=>\s*['"]([^'"]+)['"]/g;
+        let m;
+        while ((m = re.exec(block)) !== null) res.simpleMap[m[1]] = m[2];
+      }
+    }
+  }
+
+  // Extract coupon.merge({...}) output fields
+  const mergeIdx = src.indexOf('coupon.merge(');
+  if (mergeIdx !== -1) {
+    const braceIdx = src.indexOf('{', mergeIdx);
+    if (braceIdx !== -1) {
+      const block = extractBlock(src, braceIdx);
+      if (block) {
+        for (const line of block.split('\n')) {
+          const m = line.match(/^\s+(\w+):\s*(.+?),?\s*$/);
+          if (!m) continue;
+          const [, field, rawValue] = m;
+          const value = rawValue.trim().replace(/,\s*$/, '');
+          res.outputFields.push({ field, value, source: classifyGfValue(value) });
+        }
+      }
+    }
+  }
+
+  res.helperMethods = extractMethods(src);
+  return res;
+}
+
+function classifyGfValue(value) {
+  if (!value || value === 'nil') return { type: 'nil' };
+  // Direct vendor field access
+  const directM = value.match(/^coupon_info\[['"]([^'"]+)['"]\]/);
+  if (directM) return { type: 'vendor', field: directM[1] };
+  // Date-transformed vendor field
+  const dateM = value.match(/^(?:to_utc|convert_date)\(coupon_info\[['"]([^'"]+)['"]\]/);
+  if (dateM) return { type: 'date', field: dateM[1] };
+  // Ruby constants
+  const constM = value.match(/(?:Coupon::\w+::|Country::)(\w+)/);
+  if (constM) return { type: 'constant', value: constM[1] };
+  // System fields (loyalty program, coupon vendor)
+  if (/^loyalty_program/.test(value)) return { type: 'system', expr: 'loyalty_program' };
+  if (/^coupon_vendor/.test(value)) return { type: 'system', expr: 'coupon_vendor' };
+  // Method call → computed
+  const methodM = value.match(/^(\w+)\(/);
+  if (methodM) return { type: 'computed', method: methodM[1] };
+  return { type: 'expr', expr: value.substring(0, 50) };
+}
+
+function renderGfAnalysis(res, filename, ghUrl) {
+  const title = friendlyName(filename);
+  let html = `<div class="file-header">
+    <span class="file-title">${H(title)}</span>
+    <a class="gh-link" href="${ghUrl}" target="_blank" rel="noopener">View on GitHub ↗</a>
+  </div>`;
+
+  if (res.isTodo) {
+    html += `<div class="section"><span class="tag" style="background:#30363d;color:#8b949e;font-size:12px;padding:4px 10px">⚙️ Not yet implemented</span></div>`;
+    return html;
+  }
+
+  // SIMPLE_MAP section
+  if (res.simpleMap && Object.keys(res.simpleMap).length) {
+    html += `<div class="section"><div class="sec-hdr">🔀  Direct Renames <span class="sec-desc">Vendor fields copied straight to Flipp fields</span></div>`;
+    html += `<table class="amp-col-table"><thead><tr><th>Flipp field</th><th>Vendor field</th></tr></thead><tbody>`;
+    for (const [internal, vendor] of Object.entries(res.simpleMap)) {
+      html += `<tr><td><span class="fname-code">${H(internal)}</span></td><td><span class="amp-col">${H(vendor)}</span></td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  // Output fields section
+  if (res.outputFields.length) {
+    html += `<div class="section"><div class="sec-hdr">📤  Output Fields <span class="sec-desc">Fields built in the parse method</span></div>`;
+    html += `<table class="amp-col-table"><thead><tr><th style="width:200px">Field</th><th>Source</th></tr></thead><tbody>`;
+    for (const f of res.outputFields) {
+      let src;
+      const s = f.source;
+      switch (s.type) {
+        case 'nil':      src = `<span class="tag empty">—</span>`; break;
+        case 'vendor':   src = `<span class="amp-src">Vendor → </span><span class="amp-col">${H(s.field)}</span>`; break;
+        case 'date':     src = `<span class="amp-src">Vendor → </span><span class="amp-col">${H(s.field)}</span> <span class="tag">date</span>`; break;
+        case 'constant': src = `<span class="tag">constant</span> <span class="fname-code">${H(s.value)}</span>`; break;
+        case 'system':   src = `<span class="tag">system</span> <span class="amp-src">${H(s.expr)}</span>`; break;
+        case 'computed': {
+          const body = res.helperMethods?.[s.method];
+          src = `<span class="xbadge x-builder" style="font-size:11px">${H(s.method)}()</span>`;
+          if (body) src += ` <span class="view-code-inline">[<button class="amp-snip-btn">▼ view code</button>]</span>`;
+          break;
+        }
+        default: src = `<span class="amp-src">${H(s.expr)}</span>`;
+      }
+      html += `<tr><td><span class="fname-code">${H(f.field)}</span></td><td>${src}</td></tr>`;
+      if (s.type === 'computed' && res.helperMethods?.[s.method]) {
+        html += `<tr class="amp-code-row" style="display:none"><td colspan="2" style="padding:0 14px 10px"><pre style="margin:0;border-radius:6px;overflow:auto;max-height:300px;background:#161b22;padding:12px"><code class="language-ruby">${H(res.helperMethods[s.method])}</code></pre></td></tr>`;
+      }
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  return html;
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────
 let _activeTab = 'ingestion';
 
@@ -1937,12 +2160,14 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
     // Reset sidebar and main panel
     document.getElementById('file-list').innerHTML = '<div class="notice">Loading…</div>';
     document.getElementById('main').innerHTML = `<div class="placeholder">
-      <div class="big-icon">${_activeTab === 'amp' ? '🗞️' : '📋'}</div>
+      <div class="big-icon">${_activeTab === 'amp' ? '🗞️' : _activeTab === 'godfather' ? '🎩' : '📋'}</div>
       <p>Select a retailer to inspect<br>its field mappings.</p>
     </div>`;
     document.querySelectorAll('.folder-row, .folder-children').forEach(el => el.remove());
     if (_activeTab === 'amp') {
       loadAmpFileList();
+    } else if (_activeTab === 'godfather') {
+      loadGfFileList();
     } else {
       loadList();
     }
@@ -1959,6 +2184,12 @@ if (TOKEN) {
       b.classList.toggle('active', b.dataset.tab === 'amp')
     );
     loadAmpFileList().then(() => applyDeepLink());
+  } else if (_bootHash.startsWith('GF/')) {
+    _activeTab = 'godfather';
+    document.querySelectorAll('.tab-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.tab === 'godfather')
+    );
+    loadGfFileList().then(() => applyDeepLink());
   } else {
     loadList();      // synchronous — folder rows are in the DOM immediately after
     applyDeepLink(); // safe to run straight away
