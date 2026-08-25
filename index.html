@@ -648,6 +648,9 @@ function analyzeCollector(src) {
     .map(([name, body]) => ({ name, feedCols: rowRefsDeep(body, methods), body }));
   if (hooks.length) out.hooks = hooks;
 
+  // API enrichment fields (enrich_offer / enrich_product)
+  out.apiEnrichment = parseApiEnrichment(methods);
+
   return out;
 }
 
@@ -995,6 +998,108 @@ function renderAnalysis(res, filename, filepath) {
     ? res.className.replace(/([A-Z])/g, ' $1').trim()
     : filename.replace('.rb', '');
 
+// ── API enrichment parsing ────────────────────────────────────────────────
+
+function parseApiEnrichment(methods) {
+  const ENRICH_METHODS = ['enrich_offer', 'enrich_product', 'enrich_item'];
+  const results = [];
+
+  for (const methodName of ENRICH_METHODS) {
+    if (!methods[methodName]) continue;
+    const lines = methods[methodName].split('\n');
+
+    // Pre-pass: track local variables
+    // e.g. en_details = offer.details['en'] → { kind:'details', lang:'en' }
+    //      api_price  = fr_enrichment_data[:price] → { kind:'enrichment', lang:'fr', key:'price' }
+    const varMap = {};
+    for (const line of lines) {
+      let m;
+      m = line.match(/(\w+)\s*=\s*(?:offer|product)\.details\[['"](\w+)['"]\]/);
+      if (m) { varMap[m[1]] = { kind: 'details', lang: m[2] }; continue; }
+      m = line.match(/(\w+)\s*=\s*(?:offer|product)\.offer_details\[['"](\w+)['"]\]/);
+      if (m) { varMap[m[1]] = { kind: 'offer_details', lang: m[2] }; continue; }
+      m = line.match(/(\w+)\s*=\s*(en|fr)_enrichment_data\[:(\w+)\]/);
+      if (m) { varMap[m[1]] = { kind: 'enrichment', lang: m[2], key: m[3] }; continue; }
+    }
+
+    for (const line of lines) {
+      let m;
+      // offer.pricing.field = value
+      m = line.match(/\boffer\.pricing\.(\w+)\s*=\s*(.+)/);
+      if (m) { results.push({ target: 'pricing', field: m[1], lang: null, source: classifyEnrichValue(m[2].trim(), varMap) }); continue; }
+      // offer.offer_details['lang'].field = value
+      m = line.match(/\boffer\.offer_details\[['"](\w+)['"]\]\.(\w+)\s*=\s*(.+)/);
+      if (m) { results.push({ target: 'offer_details', field: m[2], lang: m[1], source: classifyEnrichValue(m[3].trim(), varMap) }); continue; }
+      // local_var.field = value  (where local_var resolves to details or offer_details)
+      m = line.match(/^\s+(\w+)\.(\w+)\s*=\s*(.+)/);
+      if (m) {
+        const mapping = varMap[m[1]];
+        if (mapping && (mapping.kind === 'details' || mapping.kind === 'offer_details')) {
+          results.push({ target: mapping.kind, field: m[2], lang: mapping.lang, source: classifyEnrichValue(m[3].trim(), varMap) });
+          continue;
+        }
+      }
+      // local_var.additional_info[:key] = value
+      m = line.match(/(\w+)\.additional_info\[:(\w+)\]\s*=\s*(.+)/);
+      if (m && varMap[m[1]]?.kind === 'details') {
+        results.push({ target: 'details.additional_info', field: m[2], lang: varMap[m[1]].lang, source: classifyEnrichValue(m[3].trim(), varMap) });
+      }
+    }
+  }
+
+  return results.length ? results : null;
+}
+
+function classifyEnrichValue(value, varMap) {
+  // Direct enrichment data access
+  const enrichM = value.match(/^(en|fr)_enrichment_data\[:(\w+)\]/);
+  if (enrichM) return { type: 'api_field', lang: enrichM[1], key: enrichM[2] };
+  // Variable that was assigned from enrichment data
+  const varM = value.match(/^(\w+)$/);
+  if (varM && varMap[varM[1]]?.kind === 'enrichment') {
+    const v = varMap[varM[1]];
+    return { type: 'api_field', lang: v.lang, key: v.key };
+  }
+  // String constant
+  if (/^['"]/.test(value)) return { type: 'constant', value: value.replace(/^['"](.+)['"]$/, '$1') };
+  // Method call → computed
+  const methodM = value.match(/^(\w+)\(/);
+  if (methodM) return { type: 'computed', method: methodM[1] };
+  // Anything referencing enrichment data inline
+  if (value.includes('enrichment_data')) return { type: 'computed', method: null };
+  return { type: 'expr', expr: value.substring(0, 60) };
+}
+
+function renderApiEnrichmentSection(enrichments) {
+  let html = `<div class="section">
+    <div class="sec-hdr">⚡  API Enrichment <span class="sec-desc">Fields overridden or added by external API calls at ingest time</span></div>
+    <table class="mtable">
+      <thead><tr>
+        <th style="width:200px">Target</th>
+        <th style="width:160px">Field</th>
+        <th>Source</th>
+      </tr></thead><tbody>`;
+  for (const e of enrichments) {
+    const target = e.lang ? `${e.target} [${e.lang}]` : e.target;
+    let src;
+    const s = e.source;
+    switch (s.type) {
+      case 'api_field': src = `<span class="badge b-api" style="font-size:10px;padding:2px 6px">API</span> <span class="fname-code">${H(s.lang)}_enrichment_data[:${H(s.key)}]</span>`; break;
+      case 'computed':  src = s.method ? `<span class="xbadge x-builder">${H(s.method)}()</span>` : `<span class="xbadge x-inline">computed</span>`; break;
+      case 'constant':  src = `<span class="xbadge x-constant">constant</span> <span class="xnote">${H(s.value)}</span>`; break;
+      default:          src = `<span class="xnote">${H(s.expr || '')}</span>`;
+    }
+    html += `<tr>
+      <td><span class="fname-code" style="font-size:11px;color:#57606a">${H(target)}</span></td>
+      <td><span class="fname-code">${H(e.field)}</span></td>
+      <td>${src}</td>
+    </tr>`;
+  }
+  return html + `</tbody></table></div>`;
+}
+
+// ── Render file analysis ──────────────────────────────────────────────────
+
   const ghUrl = filepath
     ? `https://github.com/${REPO}/blob/${REF}/${filepath}`
     : null;
@@ -1047,6 +1152,9 @@ function renderAnalysis(res, filename, filepath) {
 
   // Hooks (patterns 2 & 3)
   if (res.hooks) html += renderHooksSection(res.hooks);
+
+  // API enrichment (enrich_offer / enrich_product)
+  if (res.apiEnrichment) html += renderApiEnrichmentSection(res.apiEnrichment);
 
   return html;
 }
