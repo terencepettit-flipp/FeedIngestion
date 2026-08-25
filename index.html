@@ -992,12 +992,6 @@ const H = s => String(s)
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;');
 
-function renderAnalysis(res, filename, filepath) {
-  // CamelCase → spaced words for display
-  const title = res.className
-    ? res.className.replace(/([A-Z])/g, ' $1').trim()
-    : filename.replace('.rb', '');
-
 // ── API enrichment parsing ────────────────────────────────────────────────
 
 function parseApiEnrichment(methods) {
@@ -1098,7 +1092,11 @@ function renderApiEnrichmentSection(enrichments) {
   return html + `</tbody></table></div>`;
 }
 
-// ── Render file analysis ──────────────────────────────────────────────────
+function renderAnalysis(res, filename, filepath) {
+  // CamelCase → spaced words for display
+  const title = res.className
+    ? res.className.replace(/([A-Z])/g, ' $1').trim()
+    : filename.replace('.rb', '');
 
   const ghUrl = filepath
     ? `https://github.com/${REPO}/blob/${REF}/${filepath}`
