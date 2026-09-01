@@ -832,11 +832,19 @@ function extractSubMaps(body, methods) {
     const subExpr  = (kv ? kv[2] : bv[2]).trim().replace(/,\s*$/, '');
     let   cols     = rowRefs(subExpr);
 
-    // Follow a known method call
+    // Follow a known method call — if that method has its own sub-fields, expand them
+    // with a dotted prefix (e.g. additional_info: build_additional_info(row) → additional_info.gender)
     if (!cols.length) {
       const nm = subExpr.match(/^([\w?!]+)\(/)
               || subExpr.match(/self\.(?:class\.)?([\w?!]+)\(/);
-      if (nm && methods[nm[1]]) cols = rowRefs(methods[nm[1]]);
+      if (nm && methods[nm[1]]) {
+        const nestedSubs = extractSubMaps(methods[nm[1]], methods);
+        if (nestedSubs && nestedSubs.length) {
+          nestedSubs.forEach(n => subs.push({ ...n, subField: `${subField}.${n.subField}` }));
+          continue;
+        }
+        cols = rowRefs(methods[nm[1]]);
+      }
     }
 
     // Resolve via a tracked local variable (e.g. entry&.price → inventory_details)
