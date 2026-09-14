@@ -307,6 +307,7 @@
     <button class="tab-btn active" data-tab="ingestion">📥 Feed Ingestion</button>
     <button class="tab-btn" data-tab="amp">🗞️ AMP Production</button>
     <button class="tab-btn" data-tab="godfather">🎩 Godfather</button>
+    <button class="tab-btn" data-tab="storesearch">🤖 Store Search</button>
   </div>
 
   <div class="shell">
@@ -1718,6 +1719,21 @@ function applyDeepLink() {
     return;
   }
 
+  // Store Search deep link
+  if (prefix === 'SS') {
+    if (_activeTab !== 'storesearch') {
+      document.querySelector('.tab-btn[data-tab="storesearch"]').click();
+    }
+    let attempts = 0;
+    const waitForFile = () => {
+      const el = document.querySelector(`.file-item.rb[data-ss][data-name="${filename}"]`);
+      if (el) { el.click(); return; }
+      if (++attempts < 30) setTimeout(waitForFile, 200);
+    };
+    waitForFile();
+    return;
+  }
+
   // Feed Ingestion deep link
   const folderLabel = prefix;
   const folderIdx   = FOLDERS.findIndex(f => f.label === folderLabel);
@@ -2337,6 +2353,216 @@ function renderGfAnalysis(res, filename, ghUrl) {
   return html;
 }
 
+// ── Store Search ──────────────────────────────────────────────────────────
+
+const SS_REPO = 'wishabi/content-bots';
+const SS_PATH = 'app/lib/collectors/store_search';
+const SS_REF  = '667fe1e7a5107d1396478234eabfca69019870e2';
+let _ssFileCache = null;
+
+async function loadSsFileList() {
+  const el = document.getElementById('file-list');
+  el.innerHTML = '<div class="notice">Loading…</div>';
+  try {
+    if (!_ssFileCache) {
+      const files = await ghGet(
+        `https://api.github.com/repos/${SS_REPO}/contents/${SS_PATH}?ref=${SS_REF}`
+      );
+      _ssFileCache = files
+        .filter(f => f.type === 'file' && f.name.endsWith('.rb'))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+    el.innerHTML = _ssFileCache.map(f =>
+      `<div class="file-item rb" data-path="${f.path}" data-name="${f.name}" data-ss="1">
+        <span class="ficon">🤖</span>
+        <span class="fname">${friendlyName(f.name)}</span>
+        <span class="fsize">${fmtSize(f.size)}</span>
+      </div>`
+    ).join('');
+    el.querySelectorAll('.file-item.rb[data-ss]').forEach(row =>
+      row.addEventListener('click', () => openSsFile(row))
+    );
+  } catch (e) {
+    el.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+async function openSsFile(row) {
+  document.querySelectorAll('.file-item').forEach(r => r.classList.remove('on'));
+  row.classList.add('on');
+  history.replaceState(null, '', '#SS/' + encodeURIComponent(row.dataset.name));
+  const main = document.getElementById('main');
+  main.innerHTML = '<div class="notice">Fetching…</div>';
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${SS_REPO}/contents/${row.dataset.path}?ref=${SS_REF}`
+    );
+    const src = atob(data.content.replace(/\n/g, ''));
+    const res = analyzeStoreBotScript(src);
+    const ghUrl = `https://github.com/${SS_REPO}/blob/${SS_REF}/${row.dataset.path}`;
+    main.innerHTML = renderStoreBotAnalysis(res, row.dataset.name, ghUrl);
+    if (window.Prism) Prism.highlightAllUnder(main);
+  } catch (e) {
+    main.innerHTML = `<div class="notice err">Error: ${e.message}</div>`;
+  }
+}
+
+function extractParenBlock(src, i) {
+  if (src[i] !== '(') return null;
+  let depth = 0, j = i;
+  while (j < src.length) {
+    const c = src[j];
+    if (c === '(') depth++;
+    else if (c === ')') { if (--depth === 0) return src.substring(i, j + 1); }
+    else if (c === "'" || c === '"') {
+      const q = c; j++;
+      while (j < src.length && src[j] !== q) { if (src[j] === '\\') j++; j++; }
+    }
+    j++;
+  }
+  return null;
+}
+
+function parseTopLevelKwArgs(text) {
+  const result = [];
+  const lines = text.split('\n');
+  let depth = 0;
+  for (const line of lines) {
+    const atTop = depth === 0;
+    for (const c of line) {
+      if (c === '(' || c === '{') depth++;
+      else if (c === ')' || c === '}') depth--;
+    }
+    if (!atTop) continue;
+    const m = line.match(/^\s+(\w+):\s+(.+?)(?:,)?\s*$/);
+    if (m) result.push({ field: m[1], expr: m[2].trim().replace(/,\s*$/, '') });
+  }
+  return result;
+}
+
+function analyzeStoreBotScript(src) {
+  const res = {
+    className: null, parentClass: null, merchantId: null,
+    configName: null, searchUrl: null,
+    itemFields: [], priceFields: [],
+    hasOwnExtractItem: false,
+  };
+
+  const classM = src.match(/class Collectors::StoreSearch::(\w+)(?:\s*<\s*Collectors::StoreSearch::(\w+))?/);
+  if (classM) { res.className = classM[1]; res.parentClass = classM[2] || null; }
+
+  const merchantM = src.match(/# merchant_id:\s*(\d+)/);
+  if (merchantM) res.merchantId = merchantM[1];
+
+  const configM = src.match(/# configuration_name:\s*(\w+)/);
+  if (configM) res.configName = configM[1];
+
+  const methods = extractMethods(src);
+
+  if (methods['search_url']) {
+    const urlM = methods['search_url'].match(/['"]https?:\/\/[^'"]+['"]/);
+    if (urlM) res.searchUrl = urlM[0].replace(/^['"]|['"]$/g, '');
+  }
+
+  if (methods['extract_item']) {
+    res.hasOwnExtractItem = true;
+    const body = methods['extract_item'];
+
+    const itemMatchIdx = body.indexOf('Entities::Item.new(');
+    if (itemMatchIdx !== -1) {
+      const parenIdx = itemMatchIdx + 'Entities::Item.new'.length;
+      const itemBlock = extractParenBlock(body, parenIdx);
+      if (itemBlock) {
+        res.itemFields = parseTopLevelKwArgs(itemBlock.slice(1, -1))
+          .filter(f => !f.expr.startsWith('Entities::Price'));
+      }
+    }
+
+    const priceMatchIdx = body.indexOf('Entities::Price.new(');
+    if (priceMatchIdx !== -1) {
+      const priceParenIdx = priceMatchIdx + 'Entities::Price.new'.length;
+      const priceBlock = extractParenBlock(body, priceParenIdx);
+      if (priceBlock) {
+        res.priceFields = parseTopLevelKwArgs(priceBlock.slice(1, -1));
+      }
+    }
+  }
+
+  return res;
+}
+
+function renderStoreBotAnalysis(res, filename, ghUrl) {
+  const name = res.className || friendlyName(filename);
+  let html = `<div style="padding:20px">`;
+
+  html += `<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px">
+    <div>
+      <h2 style="font-size:18px;font-weight:700;margin-bottom:6px">🤖 ${H(name)}</h2>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:#57606a">`;
+
+  if (res.merchantId)  html += `<span>🏪 Merchant ID: <strong style="color:#24292f">${H(res.merchantId)}</strong></span>`;
+  if (res.configName)  html += `<span>🔧 Config: <strong style="color:#24292f">${H(res.configName)}</strong></span>`;
+  if (res.parentClass) html += `<span>🧬 Extends: <strong style="color:#24292f">${H(res.parentClass)}</strong></span>`;
+  if (res.searchUrl)   html += `<span>🔍 Base URL: <code style="font-size:11px;background:#f6f8fa;border:1px solid #d0d7de;border-radius:3px;padding:1px 4px">${H(res.searchUrl)}</code></span>`;
+
+  html += `</div></div>
+    <a href="${H(ghUrl)}" target="_blank" rel="noopener"
+       style="font-size:12px;color:#0969da;text-decoration:none;white-space:nowrap;flex-shrink:0">View on GitHub ↗</a>
+  </div>`;
+
+  if (!res.hasOwnExtractItem) {
+    html += `<div class="notice" style="margin-bottom:16px">
+      This script delegates to <strong>${H(res.parentClass || 'its parent class')}</strong> — no own
+      <code>extract_item</code>. Open the parent script to see field mappings.
+    </div>`;
+    html += `</div>`;
+    return html;
+  }
+
+  if (res.itemFields.length) {
+    html += `<div style="margin-bottom:20px">
+      <div style="font-size:12px;font-weight:600;color:#57606a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+        Entities::Item fields
+      </div>
+      <table class="mtable" style="width:100%">
+        <thead><tr><th>Internal Field</th><th>Source Expression</th></tr></thead>
+        <tbody>`;
+    for (const { field, expr } of res.itemFields) {
+      const shortExpr = expr.length > 90 ? expr.slice(0, 87) + '…' : expr;
+      html += `<tr>
+        <td><code style="font-size:12px">${H(field)}</code></td>
+        <td style="font-family:ui-monospace,monospace;font-size:11px;color:#57606a">${H(shortExpr)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  if (res.priceFields.length) {
+    html += `<div style="margin-bottom:20px">
+      <div style="font-size:12px;font-weight:600;color:#57606a;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+        Entities::Price fields
+      </div>
+      <table class="mtable" style="width:100%">
+        <thead><tr><th>Internal Field</th><th>Source Expression</th></tr></thead>
+        <tbody>`;
+    for (const { field, expr } of res.priceFields) {
+      const shortExpr = expr.length > 90 ? expr.slice(0, 87) + '…' : expr;
+      html += `<tr>
+        <td><code style="font-size:12px">${H(field)}</code></td>
+        <td style="font-family:ui-monospace,monospace;font-size:11px;color:#57606a">${H(shortExpr)}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+
+  if (!res.itemFields.length && !res.priceFields.length) {
+    html += `<div class="notice">Could not parse field mappings from this script.</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────
 let _activeTab = 'ingestion';
 
@@ -2348,7 +2574,7 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
     // Reset sidebar and main panel
     document.getElementById('file-list').innerHTML = '<div class="notice">Loading…</div>';
     document.getElementById('main').innerHTML = `<div class="placeholder">
-      <div class="big-icon">${_activeTab === 'amp' ? '🗞️' : _activeTab === 'godfather' ? '🎩' : '📋'}</div>
+      <div class="big-icon">${_activeTab === 'amp' ? '🗞️' : _activeTab === 'godfather' ? '🎩' : _activeTab === 'storesearch' ? '🤖' : '📋'}</div>
       <p>Select a retailer to inspect<br>its field mappings.</p>
     </div>`;
     document.querySelectorAll('.folder-row, .folder-children').forEach(el => el.remove());
@@ -2356,6 +2582,8 @@ document.querySelectorAll('.tab-btn').forEach(btn =>
       loadAmpFileList();
     } else if (_activeTab === 'godfather') {
       loadGfFileList();
+    } else if (_activeTab === 'storesearch') {
+      loadSsFileList();
     } else {
       loadList();
     }
@@ -2378,6 +2606,12 @@ if (TOKEN) {
       b.classList.toggle('active', b.dataset.tab === 'godfather')
     );
     loadGfFileList().then(() => applyDeepLink());
+  } else if (_bootHash.startsWith('SS/')) {
+    _activeTab = 'storesearch';
+    document.querySelectorAll('.tab-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.tab === 'storesearch')
+    );
+    loadSsFileList().then(() => applyDeepLink());
   } else {
     loadList();      // synchronous — folder rows are in the DOM immediately after
     applyDeepLink(); // safe to run straight away
