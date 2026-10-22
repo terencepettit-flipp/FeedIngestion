@@ -436,9 +436,8 @@ async function openFile(row) {
     await Promise.all([fetchInventoryEntryMap(), fetchPivotDefaults()]); // ensure both maps are ready
     const res = analyzeCollector(src);
 
-    // Fetch parent if: no mappings at all, base_mapping merges from super, or base_product/offer calls super
     res.hasSuperDelegation = res.product?.type === 'super' || res.offer?.type === 'super';
-    if ((!res.product && !res.offer && !res.mapping || res.mappingCallsSuper || res.hasSuperDelegation) && res.parentClassFull) {
+    if (shouldFetchParent(res)) {
       res.inherited = await fetchParentAnalysis(res.parentClassFull);
     }
 
@@ -474,6 +473,13 @@ async function openFile(row) {
   }
 }
 
+// Parent mappings only matter when this file doesn't define its own fields, or extends the parent's via super
+function shouldFetchParent(res) {
+  if (!res.parentClassFull) return false;
+  const definesOwn = res.product || res.offer || res.mapping || res.productMethods;
+  return !definesOwn || res.mappingCallsSuper || res.hasSuperDelegation;
+}
+
 // ── Ruby parser ───────────────────────────────────────────────────────────
 
 /**
@@ -481,14 +487,22 @@ async function openFile(row) {
  * Uses same-indentation 'end' to detect method boundaries —
  * reliable for standard Ruby formatting.
  */
+const METHOD_PARAMS = Symbol('methodParams');
+
+function parseParamNames(list) {
+  if (!list) return [];
+  return splitTopLevelArgs(list).map(p => p.trim().replace(/^[*&]+/, '').replace(/\s*=.*$/, '').replace(/:.*$/, ''));
+}
+
 function extractMethods(source) {
-  const methods = {};
+  const methods = { [METHOD_PARAMS]: {} };
   const lines   = source.split('\n');
   let i = 0;
   while (i < lines.length) {
-    const defM = lines[i].match(/^( +)def (?:self\.)?(\w+[?!]?)/);
+    const defM = lines[i].match(/^( +)def (?:self\.)?(\w+[?!]?)(?:\(([^)]*)\))?/);
     if (defM) {
-      const [, indent, name] = defM;
+      const [, indent, name, params] = defM;
+      methods[METHOD_PARAMS][name] = parseParamNames(params);
       const body  = [];
       const endRe = new RegExp(`^${indent}end\\s*$`);
       i++;
@@ -580,6 +594,12 @@ function analyzeCollector(src) {
 
   const methods = extractMethods(src);
 
+  if (methods.expand_item) {
+    const eb = methods.expand_item;
+    out.expandsViaApi    = /\benrich\w*\(/.test(eb);
+    out.expandsPerStore  = /\bstores?\b|store_code|\binventory\(/.test(eb);
+  }
+
   // DVM tag detection
   out.dvmTags = detectDvmTags(src, methods);
 
@@ -608,8 +628,10 @@ function analyzeCollector(src) {
     'base_categories', 'base_content_internal', 'base_pricing',
     'base_offer_details', 'base_product_details',
   ]);
+  // base_dates is only a field row in per-attribute scripts; elsewhere it stays a hook
   const productMethodEntries = Object.entries(methods)
-    .filter(([name]) => PRIMARY_PRODUCT_METHODS.has(name));
+    .filter(([name]) => PRIMARY_PRODUCT_METHODS.has(name)
+      || (name === 'base_dates' && Object.keys(methods).some(n => PRIMARY_PRODUCT_METHODS.has(n))));
   if (productMethodEntries.length) {
     out.productMethods = productMethodEntries.map(([name, body]) => ({
       field:        name.replace(/^base_/, ''), // strip prefix for display
@@ -618,6 +640,7 @@ function analyzeCollector(src) {
       builderMethod: name,
       builderBody:  body,
       subMaps:      extractSubMapsDeduped(body, methods),
+      sourceNote:   nonFeedSource(body),
       type:         'builder',
     }));
   }
@@ -809,21 +832,82 @@ function _followHelperMethod(body, methods, _seen = new Set()) {
   return result;
 }
 
-function extractSubMaps(body, methods) {
+function splitTopLevelArgs(text) {
+  const args = [];
+  let depth = 0, cur = '';
+  for (let j = 0; j < text.length; j++) {
+    const c = text[j];
+    if (c === "'" || c === '"') {
+      let k = j + 1;
+      while (k < text.length && text[k] !== c) { if (text[k] === '\\') k++; k++; }
+      cur += text.substring(j, k + 1); j = k; continue;
+    }
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    if (c === ',' && depth === 0) { args.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur.trim()) args.push(cur.trim());
+  return args;
+}
+
+/** Local variable names referenced in an expression (ignores strings, symbols, keys and .method calls). */
+function exprVarNames(expr) {
+  const bare = expr.replace(/'[^']*'|"[^"]*"/g, '');
+  const names = [];
+  const re = /(^|[^\w.:@$])([a-z_]\w*)\b(?!:)/g;
+  let m;
+  while ((m = re.exec(bare)) !== null) if (!names.includes(m[2])) names.push(m[2]);
+  return names;
+}
+
+/** Feed columns an expression draws on: direct row refs, helper calls, and tracked local variables. */
+function exprCols(expr, varCols, methods) {
+  const cols = rowRefsDeep(expr, methods);
+  for (const v of exprVarNames(expr))
+    (varCols[v] || []).forEach(c => { if (!cols.includes(c)) cols.push(c); });
+  return cols;
+}
+
+function nonFeedSource(body) {
+  if (/publication_group/.test(body)) return 'live flyer publication dates';
+  if (/Time\.(zone\.)?now|Date\.(today|current)|Time\.current/.test(body)) return 'ingest time';
+  return null;
+}
+
+const LITERAL_RE = /^(true|false|'[^']*'|"[^"#]*"|-?\d[\d_.]*|:[a-z_]\w*|[A-Z][A-Z0-9_]+)$/;
+
+function extractSubMaps(body, methods, seedVars = {}) {
   const lines = body.split('\n');
 
-  // Pre-pass: build variable → feed columns map from assignment statements
+  // Pre-pass: variable → feed columns. Reassignments merge, so `sale = price if …`
+  // records that sale can fall back to price's column.
   const varCols = {};
+  const varFallback = {};
+  Object.entries(seedVars).forEach(([k, v]) => { varCols[k] = [...v]; });
   for (const line of lines) {
-    const am = line.match(/^\s+(\w+)\s*=\s+(.+)/);
+    const am = line.match(/^\s+(\w+)\s*(?:\|\|)?=\s+(.+)/);
     if (!am) continue;
-    const cols = rowRefsDeep(am[2], methods);
-    if (cols.length) varCols[am[1]] = cols;
+    const cols = exprCols(am[2], varCols, methods);
+    if (!cols.length) continue;
+    if (varCols[am[1]]) {
+      const added = cols.filter(c => !varCols[am[1]].includes(c));
+      if (added.length) {
+        varCols[am[1]].push(...added);
+        varFallback[am[1]] = [...(varFallback[am[1]] || []), ...added];
+      }
+    } else {
+      varCols[am[1]] = cols;
+    }
   }
 
   const subs = [];
+  const blocks = [];
   for (const line of lines) {
     const t  = line.trimStart();
+    if (/^(if|unless|case)\b/.test(t) || /^\w+\s*=\s*(if|unless|case)\b/.test(t)) { blocks.push('cond'); continue; }
+    if (/^(while|until|begin)\b/.test(t) || /\bdo\s*(\|[^|]*\|)?\s*$/.test(t)) { blocks.push('block'); continue; }
+    if (/^end\b/.test(t)) { blocks.pop(); continue; }
     // Primary pattern:   key: value   (symbol key in hash literal)
     const kv = t.match(/^(\w+):\s+(.+?)(?:,\s*)?$/);
     // Secondary pattern: hash[:key] = value   (bracket-style hash mutation)
@@ -831,7 +915,14 @@ function extractSubMaps(body, methods) {
     if (!kv && !bv) continue;
     const subField = kv ? kv[1] : bv[1];
     const subExpr  = (kv ? kv[2] : bv[2]).trim().replace(/,\s*$/, '');
+    const conditional = blocks.includes('cond')
+      || /\s(if|unless)\s/.test(subExpr.replace(/'[^']*'|"[^"]*"/g, ''));
     let   cols     = rowRefs(subExpr);
+
+    if (LITERAL_RE.test(subExpr)) {
+      subs.push({ subField, cols: [], expr: subExpr, entryMethod: null, constant: true, conditional });
+      continue;
+    }
 
     // Follow a known method call — if that method has its own sub-fields, expand them
     // with a dotted prefix (e.g. additional_info: build_additional_info(row) → additional_info.gender)
@@ -848,10 +939,13 @@ function extractSubMaps(body, methods) {
       }
     }
 
-    // Resolve via a tracked local variable (e.g. entry&.price → inventory_details)
+    // Resolve via tracked local variables (e.g. entry&.price → inventory_details, price - sale → both)
+    let viaVars = false, fallback = null;
     if (!cols.length) {
-      const vm = subExpr.match(/^(\w+)\b/);
-      if (vm && varCols[vm[1]]) cols = [...varCols[vm[1]]];
+      cols = exprCols(subExpr, varCols, methods);
+      viaVars = exprVarNames(subExpr).some(v => varCols[v]);
+      const bare = subExpr.match(/^(\w+)$/);
+      if (bare && varFallback[bare[1]]) fallback = varFallback[bare[1]];
     }
 
     // If variable came from inventory_details, resolve the Entry method to actual column name
@@ -865,8 +959,9 @@ function extractSubMaps(body, methods) {
       }
     }
 
+    const derived = viaVars && !entryMethod && !/^\w+(&?\.\w+[?!]?)*$/.test(subExpr);
     if (cols.length || subExpr === 'nil')
-      subs.push({ subField, cols, expr: subExpr, entryMethod });
+      subs.push({ subField, cols, expr: subExpr, entryMethod, derived, fallback, conditional });
   }
 
   // Pass 2: imperative hash['string'] = helper_method(args) style
@@ -889,6 +984,36 @@ function extractSubMaps(body, methods) {
     subs.push(...helperMerge.values());
   }
 
+  // Pass 3: { 'en' => helper(row, row['Name EN'], …) } — map call args onto the
+  // helper's params so its sub-fields resolve to the columns passed in
+  if (!subs.length) {
+    const merged = new Map();
+    const re = /(['"])[\w-]+\1\s*=>\s*([\w!?]+)\(/g;
+    let m;
+    while ((m = re.exec(body)) !== null) {
+      const name = m[2];
+      if (!methods[name]) continue;
+      const block = extractParenBlock(body, m.index + m[0].length - 1);
+      if (!block) continue;
+      const args   = splitTopLevelArgs(block.slice(1, -1));
+      const params = methods[METHOD_PARAMS]?.[name] || [];
+      const seed = {};
+      params.forEach((p, i) => {
+        if (args[i] === undefined) return;
+        const cols = exprCols(args[i], varCols, methods);
+        if (cols.length) seed[p] = cols;
+      });
+      for (const n of extractSubMaps(methods[name], methods, seed) || []) {
+        if (!merged.has(n.subField)) merged.set(n.subField, { ...n, cols: [...n.cols] });
+        else {
+          const ex = merged.get(n.subField);
+          n.cols.forEach(c => { if (!ex.cols.includes(c)) ex.cols.push(c); });
+        }
+      }
+    }
+    subs.push(...merged.values());
+  }
+
   return subs.length ? subs : null;
 }
 
@@ -903,7 +1028,7 @@ function extractSubMapsDeduped(body, methods) {
   const map = new Map();
   for (const sub of raw) {
     if (!map.has(sub.subField)) {
-      map.set(sub.subField, { subField: sub.subField, cols: [...sub.cols], expr: sub.expr });
+      map.set(sub.subField, { ...sub, cols: [...sub.cols] });
     } else {
       const existing = map.get(sub.subField);
       sub.cols.forEach(c => { if (!existing.cols.includes(c)) existing.cols.push(c); });
@@ -1062,6 +1187,8 @@ async function fetchParentAnalysis(fullParentClass) {
       mapping:  res.mapping,
       product:  res.product,
       offer:    res.offer,
+      productMethods: res.productMethods,
+      baseModel: res.baseModel,
     };
   } catch (_) {
     return null; // parent file not found or not parseable — degrade silently
@@ -1188,11 +1315,13 @@ function renderAnalysis(res, filename, filepath) {
   let html = `<div class="a-hdr">
     <h2>${H(title)}${ghUrl ? `<span class="file-ref">(<a href="${ghUrl}" target="_blank" rel="noopener">${H(filename)}</a>)</span>` : ''}</h2>
     <div class="badge-row">`;
-  const isV2 = res.baseModel === 'Offer' || res.baseModel === 'Product' || !!res.productMethods;
+  const isV2Model = r => r && (r.baseModel === 'Offer' || r.baseModel === 'Product' || !!r.productMethods);
+  const isV2 = isV2Model(res) || isV2Model(res.inherited);
   if (res.merchantIds.length)  html += `<span class="badge b-merchant">🏪 Merchant #${res.merchantIds.join(', ')}</span>`;
   if (res.parentClass)         html += `<span class="badge b-parent">extends ${H(res.parentClass)}</span>`;
   if (res.encodingOverride)    html += `<span class="badge b-encoding">encoding: ${H(res.encodingOverride)}</span>`;
-  if (res.hasExpandItem)       html += `<span class="badge b-api">⚡ API enrichment</span>`;
+  if (res.expandsViaApi)       html += `<span class="badge b-api" title="expand_item calls enrich_* to pull data from an API">⚡ API enrichment</span>`;
+  if (res.expandsPerStore)     html += `<span class="badge b-parent" title="expand_item copies each offer once per store">🏬 Store fan-out</span>`;
   html += isV2
     ? `<span class="badge b-v2">V2 model</span>`
     : `<span class="badge b-v1">V1 model</span>`;
@@ -1400,7 +1529,7 @@ function renderEntryRows(entry) {
   if (entry.type !== 'builder' || !entry.subMaps || !entry.subMaps.length) {
     return `<tr${dim ? ' class="dim"' : ''}>
       <td><span class="fname-code">${H(entry.field)}</span></td>
-      <td>${renderCols(entry.feedCols)}</td>
+      <td>${renderCols(entry.feedCols, entry.sourceNote && `from ${entry.sourceNote}`)}</td>
       <td>${renderXform(entry)}</td>
     </tr>`;
   }
@@ -1418,12 +1547,18 @@ function renderEntryRows(entry) {
     const viewCode = entryBody
       ? `<div class="xform"><span class="view-code-inline">[<button class="amp-snip-btn">▼ view code</button>]</span></div>`
       : '';
-    html += `<tr class="sub-row${last && !entryBody ? ' group-end' : ''}">
+    let note = '';
+    if (s.conditional) note += `<span class="xbadge x-inline" title="Only set when a condition in the code is met">only if…</span>`;
+    if (s.constant)    note += `<span class="xbadge x-constant">constant</span><span class="xnote">${H(s.expr)}</span>`;
+    else if (s.derived) note += `<span class="xbadge x-computed">computed</span><span class="xnote">${H(s.expr.length > 70 ? s.expr.slice(0, 67) + '…' : s.expr)}</span>`;
+    if (s.fallback?.length) note += `<span class="xnote">falls back to ${H(s.fallback.join(', '))}</span>`;
+    const noteCell = note ? `<div class="xform">${note}</div>` : '';
+    html += `<tr class="sub-row${last && !entryBody ? ' group-end' : ''}${s.constant ? ' dim' : ''}">
       <td class="sub-field-cell">
         <span class="sub-fname">${H(s.subField)}</span>
       </td>
       <td>${renderCols(s.cols)}</td>
-      <td>${viewCode}</td>
+      <td>${noteCell}${viewCode}</td>
     </tr>`;
     if (entryBody) {
       html += `<tr class="amp-code-row sub-row${last ? ' group-end' : ''}" style="display:none"><td colspan="3" style="padding:0 14px 10px"><pre style="margin:0;border-radius:6px;overflow:auto;max-height:200px;background:#161b22;padding:12px"><code class="language-ruby">${H(entryBody)}</code></pre></td></tr>`;
@@ -1433,8 +1568,8 @@ function renderEntryRows(entry) {
   return html;
 }
 
-function renderCols(cols) {
-  if (!cols || !cols.length) return `<span class="tag empty">—</span>`;
+function renderCols(cols, emptyNote) {
+  if (!cols || !cols.length) return `<span class="tag empty">${H(emptyNote || '—')}</span>`;
   return `<div class="tags">${cols.map(c => `<span class="tag">${H(c)}</span>`).join('')}</div>`;
 }
 
@@ -1579,8 +1714,10 @@ function renderInheritedSection(inherited, localOverrides) {
   // Explicit builders from parent (e.g. ShoppersDrugMart for Pharmaprix)
   if (inherited.product) html += renderSection('📦  Product Fields (inherited)', inherited.product);
   if (inherited.offer)   html += renderSection('🏷️  Offer Fields (inherited)',   inherited.offer);
+  if (inherited.productMethods)
+    html += renderProductMethodsSection(inherited.productMethods, inherited.mapping, inherited.baseModel);
 
-  if (!inherited.mapping && !inherited.product && !inherited.offer) {
+  if (!inherited.mapping && !inherited.product && !inherited.offer && !inherited.productMethods) {
     html += `<p class="sec-note">Parent class found but no parseable field mapping detected.</p>`;
   }
 
